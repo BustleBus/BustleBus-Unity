@@ -2,11 +2,13 @@
 using UnityEngine.AI;
 using System;
 
-public enum AgentState3D { IdleOutside, QueueOutside, Boarding, Riding, PrepareAlight, Alighting }
+// AgentState3D에서 PrepareAlight 상태 제거
+public enum AgentState3D { IdleOutside, QueueOutside, Boarding, Riding, Alighting }
 
 [RequireComponent(typeof(NavMeshAgent))]
 public class PassengerAgent : MonoBehaviour
 {
+    // 상태 정의 수정
     public AgentState3D state = AgentState3D.IdleOutside;
     public bool willAlightHere;
 
@@ -161,7 +163,12 @@ public class PassengerAgent : MonoBehaviour
             if (!agent.pathPending && agent.remainingDistance <= arriveThreshold)
             {
                 transform.position = mySeatOrStand.Anchor.position;
-                FaceForward(mySeatOrStand.Anchor.forward);
+
+                // 입석 방향 처리
+                if (mySeatOrStand.kind == SlotKind.Stand)
+                    FaceForward(mySeatOrStand.StandingForward);
+                else
+                    FaceForward(mySeatOrStand.Anchor.forward);
 
                 if (animator)
                 {
@@ -176,22 +183,7 @@ public class PassengerAgent : MonoBehaviour
             }
         }
 
-        // 하차 준비: 문 위치로 이동 (StopController가 제어)
-        if (state == AgentState3D.PrepareAlight)
-        {
-            if (animator) animator.SetBool("isWalking", true);
-
-            // PrepareAlight 상태에서 갇힘 방지 워치독 (혹시 모를 상황에 대비해 약하게 유지)
-            if (exitDoor)
-            {
-                float d = Vector3.Distance(transform.position, exitDoor.transform.position);
-                if (d < 1.2f && Time.time - stateEnterTime > 0.75f)
-                {
-                    // 문에 가까워지면 admit 시도 (Co_AlightFlow_Instant에서 주로 호출되지만, 보험)
-                    exitDoor.TryAdmitAlight(this);
-                }
-            }
-        }
+        // PrepareAlight 로직 제거됨
 
         // 하차 진행: 바깥 도착하면 제거
         if (state == AgentState3D.Alighting && agent && agent.isActiveAndEnabled)
@@ -207,7 +199,7 @@ public class PassengerAgent : MonoBehaviour
                     {
                         agent.isStopped = true;
                         agent.ResetPath();
-                        agent.enabled = false; // ★ 뭉침/복귀 방지: NavMesh Agent 비활성화
+                        agent.enabled = false; // 뭉침/복귀 방지: NavMesh Agent 비활성화
                     }
                     // 콜백 먼저 호출(컨트롤러가 카운터 조정 가능)
                     onDespawn?.Invoke(this);
@@ -247,11 +239,15 @@ public class PassengerAgent : MonoBehaviour
                 else if (entryDoor) FacePoint(entryDoor.transform.position);
                 break;
             case AgentState3D.Riding:
-                if (mySeatOrStand) FaceForward(mySeatOrStand.Anchor.forward);
+                if (mySeatOrStand)
+                {
+                    if (mySeatOrStand.kind == SlotKind.Stand)
+                        FaceForward(mySeatOrStand.StandingForward);
+                    else
+                        FaceForward(mySeatOrStand.Anchor.forward);
+                }
                 break;
-            case AgentState3D.PrepareAlight:
-                if (exitDoor) FacePoint(exitDoor.transform.position); // 뒷문 바라보기
-                break;
+            // PrepareAlight 상태 제거됨
             case AgentState3D.Alighting:
                 if (speed < 0.05f && exitDoor) FacePoint(exitDoor.transform.position);
                 break;
@@ -335,10 +331,10 @@ public class PassengerAgent : MonoBehaviour
         ResetWatchdog();
     }
 
-    // ★★★ 하차 시작: 문 위치를 목표로 설정
-    public void BeginAlightPrepare(DoorGate d)
+    // ★★★ 하차 시작: 바로 Alighting 상태로 전환 및 최종 지점 목표 설정 ★★★
+    public void BeginAlight(DoorGate d, Vector3 exitPoint)
     {
-        state = AgentState3D.PrepareAlight;
+        state = AgentState3D.Alighting;
         exitDoor = d;
 
         if (mySeatOrStand) mySeatOrStand.Release(this);
@@ -351,16 +347,7 @@ public class PassengerAgent : MonoBehaviour
             animator.SetBool("isWalking", true);
         }
 
-        // 뒷문 위치를 목표로 설정하여 이동 유도
-        if (exitDoor != null) GoToPoint(exitDoor.transform.position);
-        ResetWatchdog();
-    }
-
-    // ★★★ 최종 하차: 바깥 도착 지점을 목표로 설정
-    public void BeginAlightMoveToFinal(Vector3 exitPoint)
-    {
-        state = AgentState3D.Alighting;
-        if (animator) { animator.ResetTrigger("Seat"); animator.SetBool("isWalking", true); }
+        // 최종 하차 지점으로 바로 이동 시작
         GoToPoint(exitPoint);
         ResetWatchdog();
     }

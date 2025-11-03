@@ -48,7 +48,7 @@ public class StopController : MonoBehaviour
         if (doorIn) doorIn.SetEntryExit(isEntry: true, isExit: false);
         if (doorOut) doorOut.SetEntryExit(isEntry: false, isExit: true);
 
-        // 데모용 초기 줄 구성
+        // 초기 줄 생성 로직 (버스 밖 대기열에만 생성)
         if (queueRootOutside && queueRootOutside.childCount > 0)
         {
             foreach (Transform q in queueRootOutside)
@@ -59,9 +59,11 @@ public class StopController : MonoBehaviour
         }
         else
         {
+            // 기본 위치에 3명 생성
             Vector3 basePos = entryPoint ? entryPoint.position : transform.position;
             for (int i = 0; i < 3; i++)
             {
+                // 버스 뒤쪽 방향으로 위치 조정하여 생성
                 var a = SpawnAgentAt(basePos + (-transform.forward * (1.0f + 0.6f * i)));
                 AddToQueue(a);
             }
@@ -140,33 +142,54 @@ public class StopController : MonoBehaviour
         bool doorOutOpen = alightersCount > 0;
 
         // 문 오픈 및 admit 설정
-        if (doorIn && doorInOpen)
+        if (doorIn)
         {
-            doorIn.HoldOpen(this); doorIn.SetAdmitEnabled(true); doorIn.Open();
-        }
-        if (doorOut && doorOutOpen)
-        {
-            doorOut.HoldOpen(this); doorOut.SetAdmitEnabled(true); doorOut.Open();
+            doorIn.SetDoorLinks(false); // 초기 Link 비활성화
+            if (doorInOpen)
+            {
+                doorIn.HoldOpen(this); doorIn.SetAdmitEnabled(true); doorIn.Open();
+            }
+            else
+            {
+                doorIn.ForceCloseNow();
+            }
         }
 
-        // 문이 열리지 않는다면 닫아두기
-        if (doorIn && !doorInOpen) doorIn.ForceCloseNow();
-        if (doorOut && !doorOutOpen) doorOut.ForceCloseNow();
+        if (doorOut)
+        {
+            doorOut.SetDoorLinks(false); // 초기 Link 비활성화
+            if (doorOutOpen)
+            {
+                doorOut.HoldOpen(this); doorOut.SetAdmitEnabled(true); doorOut.Open();
+            }
+            else
+            {
+                doorOut.ForceCloseNow();
+            }
+        }
+
+        // 뒷문 탑승 방지: 승차 시 뒷문의 NavMesh Link를 임시 차단 (앞문이 열린 경우만)
+        if (doorOut && doorOutOpen && doorInOpen)
+        {
+            doorOut.SetDoorLinks(false);
+        }
 
         // 하차자 이동 시작 (뒷문이 열렸을 때만 명령)
         if (doorOutOpen)
         {
+            // 하차 지점 확보 (exitPointOutside가 없으면 문 바깥으로 강제 경로 설정)
+            Vector3 finalExitPoint = exitPointOutside ? exitPointOutside.position : doorOut.transform.position - doorOut.transform.forward * 1.5f;
             foreach (var a in insideAgents)
             {
                 if (a != null && a.willAlightHere)
                 {
-                    // 2단계 하차: 문 위치로 먼저 이동하도록 명령
-                    a.BeginAlightPrepare(doorOut);
+                    // ★★★ 수정: PrepareAlight 건너뛰고 바로 Alighting 상태로 최종 지점 목표 설정
+                    a.BeginAlight(doorOut, finalExitPoint);
                 }
             }
         }
 
-        // 줄 모자라면 정확 수만큼만 스폰
+        // 줄 모자라면 정확 수만큼만 스폰 (버스 밖 대기열에 생성)
         int need = Mathf.Max(0, boardingGoalThisStop - outsideQueue.Count);
         if (need > 0) SpawnExactForBoarding(need);
 
@@ -189,6 +212,12 @@ public class StopController : MonoBehaviour
             yield return coBoard;
         }
 
+        // 뒷문 Link 복구 (문 닫기 전에 경로를 다시 연결)
+        if (doorOut && doorOutOpen && doorInOpen)
+        {
+            doorOut.SetDoorLinks(true);
+        }
+
         // 더 이상 admit 금지 (문이 열렸던 경우에만)
         if (doorOut && doorOutOpen) doorOut.SetAdmitEnabled(false);
         if (doorIn && doorInOpen) doorIn.SetAdmitEnabled(false);
@@ -196,6 +225,26 @@ public class StopController : MonoBehaviour
         // 문 닫기 (문이 열렸던 경우에만 닫기 로직 실행)
         if (doorOut && doorOutOpen) CloseDoorImmediately(doorOut);
         if (doorIn && doorInOpen) CloseDoorImmediately(doorIn);
+
+        //  문 닫힘 애니메이션/장애물 적용 대기 (운행 시작 보장) 
+        if (doorOutOpen || doorInOpen)
+        {
+            float closeTimeout = Time.time + 5.0f; // 최대 4초로 증가
+
+            if (doorOut && doorOutOpen)
+            {
+                yield return new WaitUntil(() => doorOut.isOpen == false || Time.time > closeTimeout);
+            }
+
+            if (doorIn && doorInOpen)
+            {
+                closeTimeout = Time.time + 5.0f; // 최대 4초로 증가
+                yield return new WaitUntil(() => doorIn.isOpen == false || Time.time > closeTimeout);
+            }
+
+            // 안전을 위해 닫힘 애니메이션 시간을 추가 대기
+            yield return new WaitForSeconds(0.2f);
+        }
 
         yield break;
     }
@@ -211,6 +260,7 @@ public class StopController : MonoBehaviour
         door.SetAdmitEnabled(false);
     }
 
+    // 하차 준비/대기열을 건너뛰는 즉시 하차 코루틴
     IEnumerator Co_AlightFlow_Instant()
     {
         if (!doorOut) yield break;
@@ -231,44 +281,41 @@ public class StopController : MonoBehaviour
         {
             var a = alighters[i];
 
-            // MissingReferenceException 방지
             if (a == null) continue;
 
             // 1. Admit 시도 (문 슬롯 통과 권한 획득)
-            float timeout = Time.time + 3.0f; // 최대 3초 대기
+            float timeout = Time.time + 3.0f;
             bool admitted = false;
 
-            // yield 대기 중 객체 파괴 방지 체크
             yield return new WaitUntil(() => a == null || (admitted = doorOut.TryAdmitAlight(a)) || Time.time > timeout);
 
-            if (a == null) continue; // yield 대기 중 파괴 시 다음 루프로 이동
+            if (a == null) continue;
 
             if (!admitted)
             {
-                // Admit 실패 시 강제 하차 (문 통과 대기 생략)
                 Debug.LogWarning($"[Co_AlightFlow_Instant] Agent {a.name} failed to admit. Forcing final move.");
             }
             else
             {
-                // 2. 문 슬롯 중앙 도착 대기
+                // 2. 문 슬롯 중앙 도착 대기 (이미 Alighting 상태이지만, 문 슬롯 진입 경로 확인)
                 timeout = Time.time + 3.0f;
                 yield return new WaitUntil(() => a == null || a.Reached() || Time.time > timeout);
 
-                if (a == null) continue; // yield 대기 중 파괴 시 다음 루프로 이동
+                if (a == null) continue;
 
-                // ★★★ 3. 슬롯을 완전히 통과할 때까지 강제 대기
+                // 3. 슬롯을 완전히 통과할 때까지 강제 대기 (낑김 방지 강화)
                 var nearestSlot = NearestSlot(doorOut.gateSlots, a.transform.position);
                 if (nearestSlot)
                 {
-                    // 문 안쪽으로 한 발짝 더 목표를 지정 (다음 승객에게 공간을 확보)
-                    Vector3 throughPoint = nearestSlot.position - doorOut.transform.forward * 0.7f;
+                    // 문 바깥쪽으로 명확한 목표 지점 설정 (NavMesh Agent가 문을 빠져나가도록 유도)
+                    Vector3 throughPoint = exitPointOutside ? exitPointOutside.position : nearestSlot.position - doorOut.transform.forward * 1.5f;
                     a.GoToPoint(throughPoint);
 
                     // doorOut.passClearDistance를 넘어서 문 슬롯을 완전히 벗어날 때까지 대기
-                    float clearTimeout = Time.time + 2.0f;
+                    float clearTimeout = Time.time + 3.0f;
                     yield return new WaitUntil(() =>
                         a == null ||
-                        Vector3.Distance(a.transform.position, nearestSlot.position) > doorOut.passClearDistance ||
+                        Vector3.Distance(a.transform.position, nearestSlot.position) > doorOut.passClearDistance * 2f ||
                         Time.time > clearTimeout
                     );
                 }
@@ -276,8 +323,12 @@ public class StopController : MonoBehaviour
                 doorOut.ReleaseAgent(a); // 슬롯에서 해제하여 다음 승객에게 양보
             }
 
-            // 4. 최종 하차 지점으로 이동 명령
-            if (a != null && exitPointOutside) a.BeginAlightMoveToFinal(exitPointOutside.position);
+            // 4. 최종 하차 지점으로 이동 명령 (BeginAlight에서 이미 호출되었지만, Admit 실패 시 경로 복구 용도)
+            if (a != null && a.state != AgentState3D.Alighting) // Alighting 상태가 아니라면 (Admit 실패로 인해) 재시작
+            {
+                Vector3 finalExitPoint = exitPointOutside ? exitPointOutside.position : doorOut.transform.position - doorOut.transform.forward * 1.5f;
+                a.BeginAlight(doorOut, finalExitPoint);
+            }
 
             yield return new WaitForSeconds(gateInterval);
         }
@@ -304,37 +355,42 @@ public class StopController : MonoBehaviour
             p.exitDoor = doorOut;
             p.BeginBoard(doorIn);
 
-            // 슬롯 허가 + 진입
+            // 1. 슬롯 허가 + 진입 대기
             yield return new WaitUntil(() => doorIn.TryAdmitBoard(p));
+            // 2. 문 슬롯 중앙 도착 대기
             yield return new WaitUntil(() => p.Reached());
 
-            // 슬롯 안쪽 한 발짝
+            // 3. 슬롯 안쪽 한 발짝 이동 명령
             var nearestSlot = NearestSlot(doorIn.gateSlots, p.transform.position);
             if (nearestSlot)
             {
                 Vector3 passThrough = nearestSlot.position + doorIn.transform.forward * 0.7f;
                 p.GoToPoint(passThrough);
-                yield return new WaitUntil(() =>
-                    Vector3.Distance(p.transform.position, nearestSlot.position) > doorIn.passClearDistance || p.Reached(0.2f));
+
+                // 문 슬롯 통과를 위한 최소 대기 시간 부여
+                yield return new WaitForSeconds(0.1f);
+
                 doorIn.ReleaseAgent(p);
             }
 
-            // 좌석 우선 → 없으면 입석
+            // 4. 좌석/입석 슬롯 찾아 이동 시작 (이동 완료까지 기다리지 않음)
             var slot = FindNearestFreeSeat(p.transform.position);
             if (slot == null) slot = FindNearestFreeStand(p.transform.position);
 
             if (slot != null) p.BeginRide(slot);
             else p.GoToPoint(doorIn.transform.position + doorIn.transform.forward * 0.9f);
 
+            // 5. 탑승 완료 처리 및 카운트 증가 (다음 승객 처리 루프 즉시 재개)
             insideAgents.Add(p);
             boardedThisStop++;
 
-            yield return new WaitForSeconds(gateInterval);
+            // 다음 승객을 위한 대기 시간 없음
         }
+
+        // 최종 탑승 완료 후, 마지막 승객이 문 안쪽에서 좌석으로 이동할 시간을 확보 (닫힘 보장)
         if (boardedThisStop > 0 && doorIn)
         {
-            // 문 주변에 승객이 없는지 DoorGate 자체에게 물어보며 최대 1초 대기
-            float finalClearTimeout = Time.time + 1.0f;
+            float finalClearTimeout = Time.time + 2f;
             yield return new WaitUntil(() => doorIn.IsClearStrict() || Time.time > finalClearTimeout);
 
             if (Time.time > finalClearTimeout)

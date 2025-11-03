@@ -39,8 +39,33 @@ public class DoorGate : MonoBehaviour
     private readonly HashSet<PassengerAgent> inGate = new();
     private float clearSince = -1f;
 
-    void Awake() { if (!animator) animator = GetComponent<Animator>(); }
+    void Awake()
+    {
+        if (!animator) animator = GetComponent<Animator>();
 
+        // 초기 상태: NavMesh Obstacle 비활성화 (문이 닫혀있더라도 초기 경로 문제가 없도록 함)
+        SetDoorBlockers(false);
+        SetDoorLinks(false);
+    }
+    void Update()
+    {
+        // 문이 열려있는 상태인데, Obstacle이 활성화되어 있다면 강제로 비활성화
+        if (isOpen)
+        {
+            if (doorBlockers != null)
+            {
+                foreach (var obs in doorBlockers)
+                {
+                    if (obs != null && obs.enabled)
+                    {
+                        // 문이 열렸는데도 막고 있다면 강제 해제 (초기화 오류 방지)
+                        SetDoorBlockers(false);
+                        break;
+                    }
+                }
+            }
+        }
+    }
     // StopController에서 문 타입을 설정하기 위한 함수
     public void SetEntryExit(bool isEntry, bool isExit) { this.isEntry = isEntry; this.isExit = isExit; }
 
@@ -57,7 +82,9 @@ public class DoorGate : MonoBehaviour
     public void Open()
     {
         isOpen = true;
-        PlayOpenAnim(); SetDoorBlockers(false); SetDoorLinks(true);
+        PlayOpenAnim();
+        SetDoorBlockers(false); // ★ 문이 열릴 때 Obstacle 비활성화
+        SetDoorLinks(true);
     }
     public void Close()
     {
@@ -99,11 +126,14 @@ public class DoorGate : MonoBehaviour
         foreach (var obs in doorBlockers)
         {
             if (!obs) continue;
+            // closed가 true면 활성화 (닫힘), closed가 false면 비활성화 (열림)
             obs.enabled = closed; obs.carving = closed;
             var col = obs.GetComponent<Collider>(); if (col) col.enabled = closed;
         }
     }
-    void SetDoorLinks(bool on) { if (openLinks == null) return; foreach (var link in openLinks) if (link) link.activated = on; }
+
+    // NavMesh Link 제어 함수 (StopController에서 경로 차단 목적으로 재사용)
+    public void SetDoorLinks(bool on) { if (openLinks == null) return; foreach (var link in openLinks) if (link) link.activated = on; }
 
     int LM() => (agentLayer.value != 0) ? agentLayer.value : Physics.AllLayers;
 

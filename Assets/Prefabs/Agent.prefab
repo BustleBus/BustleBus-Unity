@@ -4862,9 +4862,9 @@ MonoBehaviour:
   arriveThreshold: 0.5
   outsideDoneDistance: 1.2
   followDistance: 0.6
-  queueRepathInterval: 0.15
+  queueRepathInterval: 0.05
   queueSettleRadius: 0.15
-  queueWakeDistance: 0.28
+  queueWakeDistance: 0.5
   despawnAfterAlight: 1
   despawnDelay: 0.1
 --- !u!54 &5914498206968079055
