@@ -1,74 +1,55 @@
-using System.Collections;
+ï»¿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 
 public class StopController : MonoBehaviour
 {
-    [Header("¿ë·®/ÂüÁ¶")]
+    [Header("ìš©ëŸ‰/ë¬¸/í¬ì¸íŠ¸")]
     public int capacity = 40;
+    public DoorGate doorIn;                 // ì•ë¬¸(ìŠ¹ì°¨ ì „ìš©)
+    public DoorGate doorOut;                // ë’·ë¬¸(í•˜ì°¨ ì „ìš©)
+    public Transform exitPointOutside;      // í•˜ì°¨ í›„ ë°”ê¹¥ ë„ì°©ì 
+    public Transform queueRootOutside;      // ì¤„ í¬ì¸íŠ¸ë“¤
+    public Transform entryPoint;            // ì¤„ ë§¨ì•
 
-    [Tooltip("Å¾½Â¹®(½ÂÂ÷¹®) - forward°¡ ¹ö½º ¾ÈÂÊÀ» ÇâÇØ¾ß ÇÔ")]
-    public DoorGate doorIn;
-
-    [Tooltip("ÇÏÂ÷¹® - forward°¡ ¹ö½º ¾ÈÂÊÀ» ÇâÇØ¾ß ÇÔ")]
-    public DoorGate doorOut;
-
-    [Tooltip("¹ö½º ¹ÛÀ¸·Î ¿ÏÀüÈ÷ ³ª°£ °ÍÀ¸·Î º¸´Â Æ÷ÀÎÆ® (NavMesh À§)")]
-    public Transform exitPointOutside;
-
-    [Tooltip("´ë±â¿­ ÃÊ±â ½ºÆù Æ÷ÀÎÆ® ·çÆ® (ÀÚ½Ä: Q_00, Q_01 ¡¦)")]
-    public Transform queueRootOutside;
-
-    [Tooltip("¹® ¹Ù·Î ¾Õ °¡Àå ¾ÕÀÚ¸® (¾øÀ¸¸é queueRootOutside Ã¹ ÀÚ½Ä »ç¿ë)")]
-    public Transform entryPoint;
-
+    [Header("ìŠ¬ë¡¯ë“¤")]
     public List<SeatSlot> seatSlots = new();
+    public List<SeatSlot> standSlots = new();
 
-    [Header("¿¡ÀÌÀüÆ® Ç®/¸®½ºÆ® (·±Å¸ÀÓ Àü¿ë)")]
-    [System.NonSerialized] public List<PassengerAgent> insideAgents = new();
-    [System.NonSerialized, HideInInspector] public List<PassengerAgent> outsideQueue = new();
-
-    [Header("Å¸ÀÌ¹Ö")]
-    public float gateInterval = 0.25f;
-
-    [Header("ÁÖÇà(·£´ı)")]
+    [Header("ì—°ì¶œ/ë”œë ˆì´")]
+    public float gateInterval = 0.2f;
     public float cruiseTimeMin = 3.0f;
     public float cruiseTimeMax = 7.0f;
-
-    [Header("¿¬Ãâ(¼±ÅÃ)")]
     public Animator busAnimator;
 
-    [Header("½ºÆù")]
+    [Header("íƒ‘ìŠ¹ ìˆ˜")]
     public PassengerAgent agentPrefab;
-
-    [Header("Á¤·ùÀåº° ·£´ı Å¾½Â ¼ö")]
     public int boardMinPerStop = 1;
     public int boardMaxPerStop = 5;
 
-    [Header("Á¤Â÷ ½Ã ´ë±â¿­ ½ºÆù(·£´ı)")]
-    public int spawnMinPerStop = 0;
-    public int spawnMaxPerStop = 5;
-    public int outsideQueueMax = 30;
-    public float spawnBackSpacing = 1f;
+    [Header("ë’·ë¬¸ ë‚´ë¶€ í•˜ì°¨ ëŒ€ê¸°ì—´")]
+    public int exitQueueSlots = 6;
+    public float exitQueueSpacing = 0.55f;
+    public float exitQueueStartOffset = 0.35f;
 
-    [Header("Á¤Â÷ À©µµ¿ì(ÃÊ)")]
-    public float alightWindowSeconds = 6f; // ÇÏÂ÷ Çã¿ë ½Ã°£
-    public float boardWindowSeconds = 8f; // Å¾½Â Çã¿ë ½Ã°£
+    [System.NonSerialized] public List<PassengerAgent> insideAgents = new();
+    [System.NonSerialized] public List<PassengerAgent> outsideQueue = new();
 
-    // === Á¤Â÷ 1È¸¿¡ ´ëÇÑ Å¾½Â ¸ñÇ¥/½ÇÀû ===
-    [System.NonSerialized] int boardingGoalThisStop = 0;
-    [System.NonSerialized] int boardedThisStop = 0;
-    [System.NonSerialized] bool boardingFinished = false;
+    int boardedThisStop = 0;
+    int boardingGoalThisStop = 0;
 
     void Start()
     {
-        if (entryPoint == null && queueRootOutside != null && queueRootOutside.childCount > 0)
+        if (entryPoint == null && queueRootOutside && queueRootOutside.childCount > 0)
             entryPoint = queueRootOutside.GetChild(0);
 
-        outsideQueue.Clear();
+        // ë¬¸ ì„¤ì • (ìŠ¹ì°¨/í•˜ì°¨ ì „ìš©)
+        if (doorIn) doorIn.SetEntryExit(isEntry: true, isExit: false);
+        if (doorOut) doorOut.SetEntryExit(isEntry: false, isExit: true);
 
-        if (queueRootOutside != null && queueRootOutside.childCount > 0)
+        // ë°ëª¨ìš© ì´ˆê¸° ì¤„ êµ¬ì„±
+        if (queueRootOutside && queueRootOutside.childCount > 0)
         {
             foreach (Transform q in queueRootOutside)
             {
@@ -78,7 +59,7 @@ public class StopController : MonoBehaviour
         }
         else
         {
-            Vector3 basePos = entryPoint != null ? entryPoint.position : transform.position;
+            Vector3 basePos = entryPoint ? entryPoint.position : transform.position;
             for (int i = 0; i < 3; i++)
             {
                 var a = SpawnAgentAt(basePos + (-transform.forward * (1.0f + 0.6f * i)));
@@ -92,38 +73,32 @@ public class StopController : MonoBehaviour
     PassengerAgent SpawnAgentAt(Vector3 pos)
     {
         PassengerAgent a;
-        if (agentPrefab != null)
+        if (agentPrefab)
         {
             a = Instantiate(agentPrefab, SampleOnNavMesh(pos), Quaternion.identity);
-            a.name = $"Agent_{a.GetInstanceID()}";
         }
         else
         {
-            var go = new GameObject($"Agent_{Random.Range(1000, 9999)}");
+            var go = new GameObject("Agent");
             var nav = go.AddComponent<NavMeshAgent>();
             nav.radius = 0.2f; nav.speed = 1.4f; nav.acceleration = 5f; nav.angularSpeed = 420f;
             go.transform.position = SampleOnNavMesh(pos);
-
             var vis = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            vis.name = "Visual";
             vis.transform.SetParent(go.transform, false);
-            vis.transform.localPosition = Vector3.zero;
-            vis.transform.localScale = new Vector3(0.5f, 0.9f, 0.5f);
             var col = vis.GetComponent<Collider>(); if (col) col.isTrigger = true;
-
             a = go.AddComponent<PassengerAgent>();
         }
-
         a.tag = "Agent";
-        a.OnAgentDestroyed += HandleAgentDestroyed;
+
+        // ì—ì´ì „íŠ¸ ì œê±° ì‹œ insideAgents ë¦¬ìŠ¤íŠ¸ì—ì„œ ì œê±°í•˜ë„ë¡ êµ¬ë…
+        a.onDespawn += RemoveInside;
+
         return a;
     }
 
     Vector3 SampleOnNavMesh(Vector3 pos)
     {
-        if (NavMesh.SamplePosition(pos, out var hit, 1.5f, NavMesh.AllAreas))
-            return hit.position;
-        Debug.LogWarning($"[StopController] NavMesh »ùÇÃ ½ÇÆĞ: {pos} (NavMesh ¹ÛÀÏ ¼ö ÀÖÀ½)");
+        if (NavMesh.SamplePosition(pos, out var hit, 1.5f, NavMesh.AllAreas)) return hit.position;
         return pos;
     }
 
@@ -131,276 +106,315 @@ public class StopController : MonoBehaviour
     {
         while (true)
         {
-            float cruise = Random.Range(cruiseTimeMin, cruiseTimeMax);
+            // ì£¼í–‰
             SetDriving(true);
-            yield return new WaitForSeconds(cruise);
+            yield return new WaitForSeconds(Random.Range(cruiseTimeMin, cruiseTimeMax));
 
+            // ì •ì°¨
             SetDriving(false);
             yield return ArriveStopOnce();
         }
     }
 
-    void SetDriving(bool driving)
-    {
-        if (busAnimator != null) busAnimator.SetBool("isDriving", driving);
-    }
+    void SetDriving(bool d) { if (busAnimator) busAnimator.SetBool("isDriving", d); }
 
     IEnumerator ArriveStopOnce()
     {
-        // µÎ ¹® ¿ÀÇÂ + Admit Çã¿ë
-        if (doorOut) { doorOut.HoldOpen(this); doorOut.SetAdmitEnabled(true); doorOut.Open(); }
-        if (doorIn) { doorIn.HoldOpen(this); doorIn.SetAdmitEnabled(true); doorIn.Open(); }
-
-        // ´ë±â¿­ ·£´ı ½ºÆù
-        if (spawnMaxPerStop >= spawnMinPerStop && spawnMaxPerStop > 0)
-        {
-            int spawnN = Random.Range(spawnMinPerStop, spawnMaxPerStop + 1);
-            SpawnAndQueueN(spawnN);
-        }
-
-        // ÇÏÂ÷ÀÚ ¼±Á¤ + ÁØºñ
+        // 1. í•˜ì°¨ì ì„ ì •
         SelectAlighters();
         insideAgents.RemoveAll(x => x == null);
-        foreach (var a in insideAgents)
-        {
-            if (a != null && a.willAlightHere)
-            {
-                a.exitDoor = doorOut;
-                a.BeginPrepareAlight();
-            }
-        }
+        int alightersCount = insideAgents.FindAll(x => x && x.willAlightHere).Count;
 
-        // ÀÌ¹ø Á¤Â÷ ¸ñÇ¥ Å¾½Â ¼ö
+        // 2. íƒ‘ìŠ¹ ëª©í‘œ ì‚°ì •
+        int freeSeats = CountFree(seatSlots);
+        int freeStands = CountFree(standSlots);
+        int freeTotal = freeSeats + freeStands;
+        int capacityLeft = Mathf.Max(0, capacity - insideAgents.Count);
         int wish = (boardMaxPerStop >= boardMinPerStop)
             ? Random.Range(boardMinPerStop, boardMaxPerStop + 1)
             : Mathf.Max(0, boardMinPerStop);
+        boardingGoalThisStop = Mathf.Clamp(wish, 0, Mathf.Min(freeTotal, capacityLeft));
 
-        int capacityLeft = Mathf.Max(0, capacity - insideAgents.Count);
-        int possible = Mathf.Min(wish, capacityLeft, outsideQueue.Count);
+        // --- ë¬¸ ê°œë°© ì¡°ê±´ í™•ì¸ ---
+        bool doorInOpen = boardingGoalThisStop > 0;
+        bool doorOutOpen = alightersCount > 0;
 
-        boardingGoalThisStop = possible;
-        boardedThisStop = 0;
-        boardingFinished = (possible == 0);
-
-        // º´·Ä ½ÇÇà: ÇÏÂ÷(À©µµ¿ì), Å¾½Â(¸ñÇ¥+À©µµ¿ì)
-        var alightRoutine = StartCoroutine(Co_AlightFlowWindowed(alightWindowSeconds));
-        var boardRoutine = StartCoroutine(Co_BoardFlow(boardingGoalThisStop, boardWindowSeconds));
-
-        // ÇÏÂ÷ À©µµ¿ì Á¾·á ´ë±â
-        yield return alightRoutine;
-
-        // Å¾½Â ¸ñÇ¥ ¿Ï·á ´ë±â
-        yield return new WaitUntil(() => boardingFinished);
-
-        // ¸ğµç Å¾½Â°´ÀÌ Riding »óÅÂ(ÁÂ¼® or ÀÔ¼® À§Ä¡) µµ´Ş Ã¼Å©(Âª°Ô)
-        yield return new WaitForSeconds(0.1f);
-
-        // ¹® ´İ±â(°­È­ ·çÆ¾)
-        float closeTimeout = 2.0f;
-        yield return CloseDoorSafely(doorOut, closeTimeout);
-        yield return CloseDoorSafely(doorIn, closeTimeout);
-    }
-
-    // ÇÏÂ÷: À©µµ¿ì ³»¿¡ »õ Çã°¡¸¸, ½½·Ô Åë°ú ÈÄ ¹Ù·Î ³»ºÎ ¸®½ºÆ®¿¡¼­ Á¦°Å(¹® ´İ±â ´ë±â ¾È ÇÔ)
-    IEnumerator Co_AlightFlowWindowed(float windowSeconds)
-    {
-        if (doorOut) { doorOut.SetAdmitEnabled(true); doorOut.EnsureOpen(); }
-
-        insideAgents.RemoveAll(x => x == null);
-        List<PassengerAgent> alighters = insideAgents.FindAll(x => x != null && x.willAlightHere);
-
-        float deadline = Time.time + Mathf.Max(0.5f, windowSeconds);
-        int idx = 0;
-
-        while (idx < alighters.Count && Time.time < deadline)
+        // ë¬¸ ì˜¤í”ˆ ë° admit ì„¤ì •
+        if (doorIn && doorInOpen)
         {
-            var a = alighters[idx++];
-            if (a == null) continue;
+            doorIn.HoldOpen(this); doorIn.SetAdmitEnabled(true); doorIn.Open();
+        }
+        if (doorOut && doorOutOpen)
+        {
+            doorOut.HoldOpen(this); doorOut.SetAdmitEnabled(true); doorOut.Open();
+        }
 
-            if (doorOut != null)
+        // ë¬¸ì´ ì—´ë¦¬ì§€ ì•ŠëŠ”ë‹¤ë©´ ë‹«ì•„ë‘ê¸°
+        if (doorIn && !doorInOpen) doorIn.ForceCloseNow();
+        if (doorOut && !doorOutOpen) doorOut.ForceCloseNow();
+
+        // í•˜ì°¨ì ì´ë™ ì‹œì‘ (ë’·ë¬¸ì´ ì—´ë ¸ì„ ë•Œë§Œ ëª…ë ¹)
+        if (doorOutOpen)
+        {
+            foreach (var a in insideAgents)
             {
-                doorOut.EnsureOpen();
-
-                // ¡Ú ¹® ¾ÈÂÊ ´ë±âÁ¡À¸·Î ¸ÕÀú ºÙÀÌ±â
-                Vector3 innerWait = doorOut.transform.position + doorOut.transform.forward * 0.45f;
-                a.GoToPoint(innerWait);
-                yield return new WaitUntil(() => Vector3.Distance(a.transform.position, innerWait) < 0.35f || a.Reached(0.2f));
-
-                // ±× ´ÙÀ½ ½½·Ô Çã°¡
-                yield return new WaitUntil(() => doorOut.TryAdmitAlight(a));
-                yield return new WaitUntil(() => a.Reached());
-
-                // ½½·Ô Åë°ú ÈÄ ÇÑ ¹ßÂ¦
-                Transform nearestSlot = null; float best = 9e9f;
-                foreach (var s in doorOut.gateSlots)
+                if (a != null && a.willAlightHere)
                 {
-                    float d = (s.position - a.transform.position).sqrMagnitude;
-                    if (d < best) { best = d; nearestSlot = s; }
-                }
-                if (nearestSlot != null)
-                {
-                    Vector3 passOutside = nearestSlot.position - doorOut.transform.forward * 0.7f;
-                    a.GoToPoint(passOutside);
-                    yield return new WaitUntil(() =>
-                        Vector3.Distance(a.transform.position, nearestSlot.position) > doorOut.passClearDistance || a.Reached(0.2f));
-                    doorOut.ReleaseAgent(a);
+                    // 2ë‹¨ê³„ í•˜ì°¨: ë¬¸ ìœ„ì¹˜ë¡œ ë¨¼ì € ì´ë™í•˜ë„ë¡ ëª…ë ¹
+                    a.BeginAlightPrepare(doorOut);
                 }
             }
+        }
 
-            // ¡Ú ¿©±â¼­ºÎÅÍ´Â ¹®°ú ¹«°ü: ¿ÜºÎ·Î º¸³»µÇ, ¹ö½º ³»ºÎ ¸®½ºÆ®¿¡¼­´Â Áï½Ã Á¦°Å
-            if (exitPointOutside != null) a.BeginAlight(exitPointOutside.position);
+        // ì¤„ ëª¨ìë¼ë©´ ì •í™• ìˆ˜ë§Œí¼ë§Œ ìŠ¤í°
+        int need = Mathf.Max(0, boardingGoalThisStop - outsideQueue.Count);
+        if (need > 0) SpawnExactForBoarding(need);
 
-            RemoveInside(a);      // ³»ºÎ ¸ñ·Ï Áï½Ã Á¦°Å
-            // ÆÄ±«´Â Áö¿¬(¹ÛÀ¸·Î °¡°Ô µÎ°í ³ªÁß¿¡ Á¤¸®)
-            StartCoroutine(Co_RecycleWhenFar(a, 3f));
+        boardedThisStop = 0;
+
+        // ë³‘ë ¬ ì²˜ë¦¬: ë¬¸ì´ ì—´ë¦° ê²½ìš°ì—ë§Œ ì½”ë£¨í‹´ ì‹¤í–‰
+        Coroutine coAlight = null;
+        if (doorOutOpen) coAlight = StartCoroutine(Co_AlightFlow_Instant());
+
+        Coroutine coBoard = null;
+        if (doorInOpen) coBoard = StartCoroutine(Co_BoardFlowExactly(boardingGoalThisStop));
+
+        // ì½”ë£¨í‹´ ëŒ€ê¸°
+        if (coAlight != null) yield return coAlight;
+
+        // íƒ‘ìŠ¹ ëª©í‘œê°€ ìˆë‹¤ë©´ ëŒ€ê¸°
+        if (doorInOpen)
+        {
+            yield return new WaitUntil(() => boardedThisStop >= boardingGoalThisStop);
+            yield return coBoard;
+        }
+
+        // ë” ì´ìƒ admit ê¸ˆì§€ (ë¬¸ì´ ì—´ë ¸ë˜ ê²½ìš°ì—ë§Œ)
+        if (doorOut && doorOutOpen) doorOut.SetAdmitEnabled(false);
+        if (doorIn && doorInOpen) doorIn.SetAdmitEnabled(false);
+
+        // ë¬¸ ë‹«ê¸° (ë¬¸ì´ ì—´ë ¸ë˜ ê²½ìš°ì—ë§Œ ë‹«ê¸° ë¡œì§ ì‹¤í–‰)
+        if (doorOut && doorOutOpen) CloseDoorImmediately(doorOut);
+        if (doorIn && doorInOpen) CloseDoorImmediately(doorIn);
+
+        yield break;
+    }
+
+    void CloseDoorImmediately(DoorGate door)
+    {
+        if (!door) return;
+        door.FlushGateOccupants();
+        // ìŠ¬ë¡¯ ë° ê²Œì´íŠ¸ í†µê³¼ ì¤‘ì¸ ìŠ¹ê°ì´ ì™„ì „íˆ ì—†ì–´ì•¼ Close 
+        if (door.IsClearStrict()) door.Close();
+        else door.ForceCloseNow();
+        door.ReleaseHold(this);   // ì¬ì˜¤í”ˆ ë°©ì§€
+        door.SetAdmitEnabled(false);
+    }
+
+    IEnumerator Co_AlightFlow_Instant()
+    {
+        if (!doorOut) yield break;
+        doorOut.EnsureOpen(); doorOut.SetAdmitEnabled(true);
+
+        insideAgents.RemoveAll(x => x == null);
+        List<PassengerAgent> alighters = insideAgents.FindAll(x => x && x.willAlightHere);
+
+        // ë¬¸ ê°€ê¹Œìš´ ìˆœ
+        alighters.Sort((a, b) =>
+        {
+            float da = (a.transform.position - doorOut.transform.position).sqrMagnitude;
+            float db = (b.transform.position - doorOut.transform.position).sqrMagnitude;
+            return da.CompareTo(db);
+        });
+
+        for (int i = 0; i < alighters.Count; i++)
+        {
+            var a = alighters[i];
+
+            // MissingReferenceException ë°©ì§€
+            if (a == null) continue;
+
+            // 1. Admit ì‹œë„ (ë¬¸ ìŠ¬ë¡¯ í†µê³¼ ê¶Œí•œ íšë“)
+            float timeout = Time.time + 3.0f; // ìµœëŒ€ 3ì´ˆ ëŒ€ê¸°
+            bool admitted = false;
+
+            // yield ëŒ€ê¸° ì¤‘ ê°ì²´ íŒŒê´´ ë°©ì§€ ì²´í¬
+            yield return new WaitUntil(() => a == null || (admitted = doorOut.TryAdmitAlight(a)) || Time.time > timeout);
+
+            if (a == null) continue; // yield ëŒ€ê¸° ì¤‘ íŒŒê´´ ì‹œ ë‹¤ìŒ ë£¨í”„ë¡œ ì´ë™
+
+            if (!admitted)
+            {
+                // Admit ì‹¤íŒ¨ ì‹œ ê°•ì œ í•˜ì°¨ (ë¬¸ í†µê³¼ ëŒ€ê¸° ìƒëµ)
+                Debug.LogWarning($"[Co_AlightFlow_Instant] Agent {a.name} failed to admit. Forcing final move.");
+            }
+            else
+            {
+                // 2. ë¬¸ ìŠ¬ë¡¯ ì¤‘ì•™ ë„ì°© ëŒ€ê¸°
+                timeout = Time.time + 3.0f;
+                yield return new WaitUntil(() => a == null || a.Reached() || Time.time > timeout);
+
+                if (a == null) continue; // yield ëŒ€ê¸° ì¤‘ íŒŒê´´ ì‹œ ë‹¤ìŒ ë£¨í”„ë¡œ ì´ë™
+
+                // â˜…â˜…â˜… 3. ìŠ¬ë¡¯ì„ ì™„ì „íˆ í†µê³¼í•  ë•Œê¹Œì§€ ê°•ì œ ëŒ€ê¸°
+                var nearestSlot = NearestSlot(doorOut.gateSlots, a.transform.position);
+                if (nearestSlot)
+                {
+                    // ë¬¸ ì•ˆìª½ìœ¼ë¡œ í•œ ë°œì§ ë” ëª©í‘œë¥¼ ì§€ì • (ë‹¤ìŒ ìŠ¹ê°ì—ê²Œ ê³µê°„ì„ í™•ë³´)
+                    Vector3 throughPoint = nearestSlot.position - doorOut.transform.forward * 0.7f;
+                    a.GoToPoint(throughPoint);
+
+                    // doorOut.passClearDistanceë¥¼ ë„˜ì–´ì„œ ë¬¸ ìŠ¬ë¡¯ì„ ì™„ì „íˆ ë²—ì–´ë‚  ë•Œê¹Œì§€ ëŒ€ê¸°
+                    float clearTimeout = Time.time + 2.0f;
+                    yield return new WaitUntil(() =>
+                        a == null ||
+                        Vector3.Distance(a.transform.position, nearestSlot.position) > doorOut.passClearDistance ||
+                        Time.time > clearTimeout
+                    );
+                }
+
+                doorOut.ReleaseAgent(a); // ìŠ¬ë¡¯ì—ì„œ í•´ì œí•˜ì—¬ ë‹¤ìŒ ìŠ¹ê°ì—ê²Œ ì–‘ë³´
+            }
+
+            // 4. ìµœì¢… í•˜ì°¨ ì§€ì ìœ¼ë¡œ ì´ë™ ëª…ë ¹
+            if (a != null && exitPointOutside) a.BeginAlightMoveToFinal(exitPointOutside.position);
 
             yield return new WaitForSeconds(gateInterval);
         }
 
-        // »õ ÇÏÂ÷ Çã°¡ Áß´Ü
-        if (doorOut) doorOut.SetAdmitEnabled(false);
+        // í•˜ì°¨ admit ì¢…ë£Œ
+        doorOut.SetAdmitEnabled(false);
     }
 
-    // ¹Ù±ùÀ¸·Î ÃæºĞÈ÷ ¶³¾îÁö¸é »èÁ¦(¹® ´İ±â¿Í µ¶¸³)
-    IEnumerator Co_RecycleWhenFar(PassengerAgent a, float minDistance)
+    IEnumerator Co_BoardFlowExactly(int target)
     {
-        if (a == null || exitPointOutside == null) yield break;
-        while (a != null && Vector3.Distance(a.transform.position, exitPointOutside.position) > 0.4f)
-        {
-            // ¾ÈÀüÀåÄ¡: ³Ê¹« °¡±î¿ì¸é °è¼Ó ÇÑ °ÉÀ½ ¸Ö¸® º¸³¿
-            if (Vector3.Distance(a.transform.position, exitPointOutside.position) < minDistance)
-                a.GoToPoint(exitPointOutside.position);
-            yield return null;
-        }
-        if (a) Destroy(a.gameObject);
-    }
-
-    // Å¾½Â: ¸ñÇ¥ ¼ö/À©µµ¿ì ³»¿¡¼­¸¸ Çã°¡
-    IEnumerator Co_BoardFlow(int targetCount, float windowSeconds)
-    {
-        if (doorIn) { doorIn.SetAdmitEnabled(true); doorIn.EnsureOpen(); }
+        if (target <= 0 || !doorIn) yield break;
+        doorIn.EnsureOpen(); doorIn.SetAdmitEnabled(true);
 
         CleanOutsideQueue();
 
-        int capacityLeft = Mathf.Max(0, capacity - insideAgents.Count);
-        int canTake = Mathf.Min(targetCount, capacityLeft, outsideQueue.Count);
-
-        float deadline = Time.time + Mathf.Max(0.5f, windowSeconds);
-        int boarded = 0;
-
-        while (Time.time < deadline && boarded < canTake &&
-               insideAgents.Count < capacity && outsideQueue.Count > 0)
+        while (boardedThisStop < target && insideAgents.Count < capacity && outsideQueue.Count > 0)
         {
             var p = outsideQueue[0];
             outsideQueue.RemoveAt(0);
-            if (p == null) { RebindQueueAnchors(0); continue; }
-
             RebindQueueAnchors(0);
+            if (!p) continue;
 
             p.entryDoor = doorIn;
+            p.exitDoor = doorOut;
             p.BeginBoard(doorIn);
 
-            if (doorIn != null)
-            {
-                yield return new WaitUntil(() => doorIn.TryAdmitBoard(p));
-                yield return new WaitUntil(() => p.Reached());
+            // ìŠ¬ë¡¯ í—ˆê°€ + ì§„ì…
+            yield return new WaitUntil(() => doorIn.TryAdmitBoard(p));
+            yield return new WaitUntil(() => p.Reached());
 
-                // ½½·Ô ¾ÈÂÊÀ¸·Î ÇÑ ¹ßÂ¦
-                Transform nearestSlot = null; float best = 9e9f;
-                foreach (var s in doorIn.gateSlots)
-                {
-                    float d = (s.position - p.transform.position).sqrMagnitude;
-                    if (d < best) { best = d; nearestSlot = s; }
-                }
-                if (nearestSlot != null)
-                {
-                    Vector3 passThrough = nearestSlot.position + doorIn.transform.forward * 0.7f;
-                    p.GoToPoint(passThrough);
-                    yield return new WaitUntil(() =>
-                        Vector3.Distance(p.transform.position, nearestSlot.position) > doorIn.passClearDistance || p.Reached(0.2f));
-                    doorIn.ReleaseAgent(p);
-                }
+            // ìŠ¬ë¡¯ ì•ˆìª½ í•œ ë°œì§
+            var nearestSlot = NearestSlot(doorIn.gateSlots, p.transform.position);
+            if (nearestSlot)
+            {
+                Vector3 passThrough = nearestSlot.position + doorIn.transform.forward * 0.7f;
+                p.GoToPoint(passThrough);
+                yield return new WaitUntil(() =>
+                    Vector3.Distance(p.transform.position, nearestSlot.position) > doorIn.passClearDistance || p.Reached(0.2f));
+                doorIn.ReleaseAgent(p);
             }
 
-            // ÁÂ¼® ¹èÁ¤
-            var slot = FindNearestFreeSlot(p.transform.position);
+            // ì¢Œì„ ìš°ì„  â†’ ì—†ìœ¼ë©´ ì…ì„
+            var slot = FindNearestFreeSeat(p.transform.position);
+            if (slot == null) slot = FindNearestFreeStand(p.transform.position);
+
             if (slot != null) p.BeginRide(slot);
-            else
-            {
-                Vector3 safeInside = doorIn != null
-                    ? doorIn.transform.position + doorIn.transform.forward * 0.9f
-                    : p.transform.position + transform.forward * 0.9f;
-                p.BeginRide(null);
-                p.GoToPoint(safeInside);
-            }
-            insideAgents.Add(p);
+            else p.GoToPoint(doorIn.transform.position + doorIn.transform.forward * 0.9f);
 
-            boarded++;
+            insideAgents.Add(p);
             boardedThisStop++;
 
             yield return new WaitForSeconds(gateInterval);
         }
+        if (boardedThisStop > 0 && doorIn)
+        {
+            // ë¬¸ ì£¼ë³€ì— ìŠ¹ê°ì´ ì—†ëŠ”ì§€ DoorGate ìì²´ì—ê²Œ ë¬¼ì–´ë³´ë©° ìµœëŒ€ 1ì´ˆ ëŒ€ê¸°
+            float finalClearTimeout = Time.time + 1.0f;
+            yield return new WaitUntil(() => doorIn.IsClearStrict() || Time.time > finalClearTimeout);
 
-        if (doorIn) doorIn.SetAdmitEnabled(false);
-        boardingFinished = true;
+            if (Time.time > finalClearTimeout)
+            {
+                Debug.LogWarning("Front door clear timeout exceeded. Forcing closure check.");
+            }
+        }
+        doorIn.SetAdmitEnabled(false);
     }
 
-    // ====== À¯Æ¿ ======
-    SeatSlot FindNearestFreeSlot(Vector3 from)
+    // ===== ìœ í‹¸ =====
+    int CountFree(List<SeatSlot> list)
+    { int c = 0; foreach (var s in list) if (s && !s.isReserved) c++; return c; }
+
+    SeatSlot FindNearestFreeSeat(Vector3 from)
     {
         float best = float.MaxValue; SeatSlot bestSlot = null;
         foreach (var s in seatSlots)
         {
-            if (!s.isReserved)
-            {
-                float d = (s.transform.position - from).sqrMagnitude;
-                if (d < best) { best = d; bestSlot = s; }
-            }
+            if (!s || s.isReserved) continue;
+            float d = (s.Anchor.position - from).sqrMagnitude;
+            if (d < best) { best = d; bestSlot = s; }
+        }
+        return bestSlot;
+    }
+    SeatSlot FindNearestFreeStand(Vector3 from)
+    {
+        float best = float.MaxValue; SeatSlot bestSlot = null;
+        foreach (var s in standSlots)
+        {
+            if (!s || s.isReserved) continue;
+            float d = (s.Anchor.position - from).sqrMagnitude;
+            if (d < best) { best = d; bestSlot = s; }
         }
         return bestSlot;
     }
 
-    void RemoveInside(PassengerAgent a)
+    Transform NearestSlot(Transform[] arr, Vector3 from)
     {
-        if (a != null && a.mySeatOrStand) a.mySeatOrStand.Release(a);
-        insideAgents.Remove(a);
+        if (arr == null || arr.Length == 0) return null;
+        float best = float.MaxValue; Transform bestT = null;
+        foreach (var t in arr)
+        {
+            if (!t) continue;
+            float d = (t.position - from).sqrMagnitude;
+            if (d < best) { best = d; bestT = t; }
+        }
+        return bestT;
     }
 
-    void HandleAgentDestroyed(PassengerAgent a)
+    Vector3 ExitQueueAnchor(int index)
     {
-        insideAgents.Remove(a);
-        int idx = outsideQueue.IndexOf(a);
-        if (idx >= 0)
-        {
-            outsideQueue.RemoveAt(idx);
-            RebindQueueAnchors(idx);
-        }
+        if (!doorOut) return transform.position;
+        Vector3 basePos = doorOut.transform.position + doorOut.transform.forward * (exitQueueStartOffset + index * exitQueueSpacing);
+        if (NavMesh.SamplePosition(basePos, out var hit, 0.8f, NavMesh.AllAreas)) return hit.position;
+        return basePos;
     }
 
     void SelectAlighters()
     {
         insideAgents.RemoveAll(x => x == null);
-        foreach (var a in insideAgents)
-            a.willAlightHere = (Random.value < 0.3f);
+        foreach (var a in insideAgents) a.willAlightHere = (Random.value < 0.3f);
     }
 
     public void AddToQueue(PassengerAgent agent)
     {
-        if (agent == null) return;
-
+        if (!agent) return;
         outsideQueue.Add(agent);
         int idx = outsideQueue.Count - 1;
 
         if (idx == 0)
         {
             agent.ClearQueueFollow();
-            agent.BeginQueue(entryPoint != null ? entryPoint : agent.transform);
+            agent.BeginQueue(entryPoint ? entryPoint : agent.transform);
         }
         else
         {
             var front = outsideQueue[idx - 1];
-            agent.BeginQueue(entryPoint != null ? entryPoint : agent.transform);
-            agent.SetQueueFollowTarget(front.transform);
+            agent.BeginQueue(entryPoint ? entryPoint : agent.transform);
+            if (front) agent.SetQueueFollowTarget(front.transform);
         }
     }
 
@@ -410,21 +424,17 @@ public class StopController : MonoBehaviour
         if (changed) RebindQueueAnchors(0);
     }
 
-    void SpawnAndQueueN(int n)
+    void SpawnExactForBoarding(int n)
     {
         if (n <= 0) return;
-        if (outsideQueueMax > 0)
-            n = Mathf.Min(n, Mathf.Max(0, outsideQueueMax - outsideQueue.Count));
-        if (n <= 0) return;
-
-        Vector3 basePos = (entryPoint != null ? entryPoint.position : transform.position);
-        Vector3 backDir = (entryPoint != null ? -entryPoint.forward : -transform.forward);
+        Vector3 basePos = (entryPoint ? entryPoint.position : transform.position);
+        Vector3 backDir = (entryPoint ? -entryPoint.forward : -transform.forward);
 
         int startIndex = outsideQueue.Count;
         for (int i = 0; i < n; i++)
         {
             int queueIndex = startIndex + i;
-            Vector3 pos = basePos + backDir * (1.0f + spawnBackSpacing * (queueIndex + 1));
+            Vector3 pos = basePos + backDir * (1.0f + 1.0f * (queueIndex + 1));
             var a = SpawnAgentAt(pos);
             AddToQueue(a);
         }
@@ -433,97 +443,33 @@ public class StopController : MonoBehaviour
     void RebindQueueAnchors(int startIndex)
     {
         if (outsideQueue.Count == 0) return;
-
         for (int i = Mathf.Max(0, startIndex); i < outsideQueue.Count; i++)
         {
-            var agent = outsideQueue[i];
-            if (agent == null) continue;
-
+            var agent = outsideQueue[i]; if (!agent) continue;
             if (i == 0)
             {
                 agent.ClearQueueFollow();
-                agent.BeginQueue(entryPoint != null ? entryPoint : agent.transform);
+                agent.BeginQueue(entryPoint ? entryPoint : agent.transform);
                 agent.SendMessage("OnQueueTargetRebound", SendMessageOptions.DontRequireReceiver);
             }
             else
             {
                 var front = outsideQueue[i - 1];
-                if (front != null)
-                {
-                    agent.SetQueueFollowTarget(front.transform);
-                }
+                if (front) agent.SetQueueFollowTarget(front.transform);
                 else
                 {
-                    int j = i - 1;
-                    while (j >= 0 && outsideQueue[j] == null) j--;
-                    if (j >= 0 && outsideQueue[j] != null)
-                        agent.SetQueueFollowTarget(outsideQueue[j].transform);
-                    else
-                    {
-                        agent.ClearQueueFollow();
-                        agent.BeginQueue(entryPoint != null ? entryPoint : agent.transform);
-                    }
+                    int j = i - 1; while (j >= 0 && outsideQueue[j] == null) j--;
+                    if (j >= 0 && outsideQueue[j]) agent.SetQueueFollowTarget(outsideQueue[j].transform);
+                    else { agent.ClearQueueFollow(); agent.BeginQueue(entryPoint ? entryPoint : agent.transform); }
                 }
                 agent.SendMessage("OnQueueTargetRebound", SendMessageOptions.DontRequireReceiver);
             }
         }
     }
 
-    // ===== ¹® ´İ±â ¾ÈÀü ·çÆ¾ =====
-    IEnumerator CloseDoorSafely(DoorGate door, float timeout)
+    void RemoveInside(PassengerAgent a)
     {
-        if (door == null) yield break;
-
-        float t0 = Time.time;
-
-        while ((Time.time - t0) < timeout)
-        {
-            door.FlushGateOccupants();
-
-            if (door.IsClearStrict()) break;
-
-            NudgeAgentsAwayFromSlots(door, 0.4f);
-
-            yield return null;
-        }
-
-        // ¸¶Áö¸· ½Ãµµ
-        door.FlushGateOccupants();
-        if (door.IsClearStrict())
-        {
-            door.Close();
-        }
-        else
-        {
-            // ¡Ú ³²¾Æ ÀÖÀ¸¸é °­Á¦ ´İ±â
-            door.ForceClose();
-        }
-        door.ReleaseHold(this);
-    }
-
-    void NudgeAgentsAwayFromSlots(DoorGate door, float distance)
-    {
-        if (door == null || door.gateSlots == null) return;
-
-        for (int i = 0; i < door.gateSlots.Length; i++)
-        {
-            var s = door.gateSlots[i];
-            var hits = Physics.OverlapSphere(s.position, door.slotRadius * 1.2f, ~0, QueryTriggerInteraction.Collide);
-            if (hits == null) continue;
-
-            foreach (var h in hits)
-            {
-                if (!h || !h.CompareTag("Agent")) continue;
-                var a = h.GetComponentInParent<PassengerAgent>();
-                if (a == null) continue;
-
-                Vector3 toAgent = a.transform.position - door.transform.position; toAgent.y = 0f;
-                bool isInside = Vector3.Dot(toAgent, door.transform.forward) > 0f;
-                Vector3 dir = isInside ? door.transform.forward : -door.transform.forward;
-
-                Vector3 target = a.transform.position + dir.normalized * distance;
-                a.GoToPoint(target);
-            }
-        }
+        if (a && a.mySeatOrStand) a.mySeatOrStand.Release(a);
+        insideAgents.Remove(a);
     }
 }

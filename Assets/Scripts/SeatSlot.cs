@@ -1,10 +1,14 @@
 using UnityEngine;
 
+public enum SlotKind { Seat, Stand }
+
 public class SeatSlot : MonoBehaviour
 {
+    public SlotKind kind = SlotKind.Seat;
+    public Transform sitAnchor;
+
     public bool isReserved;
     public PassengerAgent reservedBy;
-    public Transform sitAnchor; // 없으면 본인 트랜스폼 사용
 
     public bool TryReserve(PassengerAgent a)
     {
@@ -17,9 +21,12 @@ public class SeatSlot : MonoBehaviour
         if (reservedBy == a) { isReserved = false; reservedBy = null; }
     }
 
+    public Transform Anchor => sitAnchor ? sitAnchor : transform;
+
     void OnDrawGizmos()
     {
-        Gizmos.color = isReserved ? Color.red : Color.green;
-        Gizmos.DrawWireSphere(transform.position, 0.08f);
+        Gizmos.color = (kind == SlotKind.Seat) ? (isReserved ? Color.red : Color.green)
+                                               : (isReserved ? new Color(1, 0.5f, 0) : new Color(0.2f, 0.8f, 1));
+        Gizmos.DrawWireSphere(Anchor.position, 0.08f);
     }
 }

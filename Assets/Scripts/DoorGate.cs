@@ -4,242 +4,242 @@ using UnityEngine.AI;
 
 public class DoorGate : MonoBehaviour
 {
-    public Transform[] gateSlots; // 문 바로 안/밖 포인트
+    [Header("게이트 슬롯(문 바깥/중앙/안쪽 2~3개 권장)")]
+    public Transform[] gateSlots;
     public bool isOpen;
 
-    [Header("감지 설정")]
-    [Tooltip("게이트 슬롯 감지 반경(너무 크면 지나가는 승객까지 잡힘)")]
+    [Header("문 타입 (승차 전용/하차 전용)")]
+    public bool isEntry = false;
+    public bool isExit = false;
+
+    [Header("감지/필터")]
     public float slotRadius = 0.12f;
-
-    [Tooltip("Agent만 감지하려면 Agent 레이어를 설정(비워두면 Tag(\"Agent\")로 필터)")]
-    public LayerMask agentLayer; // 0이면 태그 기반
-
-    [Tooltip("감지에서 트리거 콜라이더 제외")]
+    public LayerMask agentLayer;            // 비워두면 AllLayers
     public bool ignoreTriggerColliders = true;
 
-    [Header("NavMesh 문 차단(선택)")]
-    [Tooltip("문이 닫히면 carve ON / 열리면 carve OFF 해줄 NavMeshObstacle(문틈 차단용)")]
+    [Header("문 닫힘 보조")]
     public NavMeshObstacle[] doorBlockers;
-
-    [Header("게이트 병목/판정")]
-    [Tooltip("동시에 슬롯으로 진입 허용할 최대 인원(1 권장)")]
+    public OffMeshLink[] openLinks;
+    public float passClearDistance = 0.4f;
     public int gateThroughput = 1;
 
-    [Tooltip("슬롯에서 이 거리 이상 떨어지면 '통과 완료'로 간주")]
-    public float passClearDistance = 0.4f;
-
-    [Header("Door Links(선택)")]
-    [Tooltip("문이 열릴 때만 활성화할 OffMeshLink(밖↔안 연결)")]
-    public OffMeshLink[] openLinks;
-
-    [Header("Admit 스위치")]
-    [Tooltip("이 문으로의 새 진입(슬롯 배정)을 허용할지 여부")]
+    [Header("Admit/사이드 체크")]
+    public float admitNearRadius = 0.7f;
     public bool admitEnabled = true;
 
-    // ==== 런타임 전용 상태 ====
-    [System.NonSerialized] private HashSet<object> openHolders = new HashSet<object>();
-    [System.NonSerialized] private float clearSince = -1f;
-    [System.NonSerialized] private readonly HashSet<PassengerAgent> inGate = new HashSet<PassengerAgent>();
+    [Header("애니메이터")]
+    public Animator animator;
+    static readonly int ID_openTrig = Animator.StringToHash("open");
+    static readonly int ID_closeTrig = Animator.StringToHash("close");
+    static readonly int ID_OpenBool = Animator.StringToHash("Open");
+    static readonly int ID_OpenedBool = Animator.StringToHash("Opened");
+    static readonly int ID_ClosedBool = Animator.StringToHash("Closed");
 
-    private Animator animator;
+    private readonly HashSet<object> openHolders = new();
+    private readonly HashSet<PassengerAgent> inGate = new();
+    private float clearSince = -1f;
 
-    void Awake()
-    {
-        animator = GetComponent<Animator>();
-    }
+    void Awake() { if (!animator) animator = GetComponent<Animator>(); }
 
-    // ===== 외부 제어 =====
+    // StopController에서 문 타입을 설정하기 위한 함수
+    public void SetEntryExit(bool isEntry, bool isExit) { this.isEntry = isEntry; this.isExit = isExit; }
+
     public void SetAdmitEnabled(bool enabled) => admitEnabled = enabled;
-
-    public void HoldOpen(object owner)
-    {
-        openHolders.Add(owner);
-        isOpen = true;
-        if (animator) animator.SetTrigger("open");
-        SetDoorBlockers(false);
-        SetDoorLinks(true);
-    }
-
-    public void ReleaseHold(object owner) => openHolders.Remove(owner);
+    public void HoldOpen(object owner) { openHolders.Add(owner); EnsureOpen(); }
+    public void ReleaseHold(object owner) { openHolders.Remove(owner); }
 
     public void EnsureOpen()
     {
-        if (!isOpen)
-        {
-            isOpen = true;
-            if (animator) animator.SetTrigger("open");
-            SetDoorBlockers(false);
-            SetDoorLinks(true);
-        }
+        if (isOpen) return;
+        isOpen = true;
+        PlayOpenAnim(); SetDoorBlockers(false); SetDoorLinks(true);
     }
-
     public void Open()
     {
         isOpen = true;
-        if (animator) animator.SetTrigger("open");
-        SetDoorBlockers(false);
-        SetDoorLinks(true);
+        PlayOpenAnim(); SetDoorBlockers(false); SetDoorLinks(true);
     }
-
     public void Close()
     {
-        if (openHolders.Count > 0) return; // 홀드 중엔 닫지 않음
+        if (openHolders.Count > 0) return;
         isOpen = false;
-        if (animator) animator.SetTrigger("close");
-        SetDoorBlockers(true);
-        SetDoorLinks(false);
+        PlayCloseAnim(); SetDoorBlockers(true); SetDoorLinks(false);
     }
-
-    // ★ 강제 닫기(타임아웃 등)
-    public void ForceClose()
+    public void ForceCloseNow(string reason = "")
     {
         openHolders.Clear();
         isOpen = false;
-        if (animator) animator.SetTrigger("close");
-        SetDoorBlockers(true);
-        SetDoorLinks(false);
+        PlayCloseAnim(true);
+        SetDoorBlockers(true); SetDoorLinks(false);
+        admitEnabled = false;
+        inGate.Clear();
     }
+
+    void PlayOpenAnim()
+    {
+        if (!animator) return;
+        if (HasParam(animator, ID_openTrig)) animator.SetTrigger(ID_openTrig);
+        if (HasParam(animator, ID_OpenBool)) animator.SetBool(ID_OpenBool, true);
+        if (HasParam(animator, ID_OpenedBool)) animator.SetBool(ID_OpenedBool, true);
+        if (HasParam(animator, ID_ClosedBool)) animator.SetBool(ID_ClosedBool, false);
+    }
+    void PlayCloseAnim(bool force = false)
+    {
+        if (!animator) return;
+        if (HasParam(animator, ID_closeTrig)) animator.SetTrigger(ID_closeTrig);
+        if (HasParam(animator, ID_OpenBool)) animator.SetBool(ID_OpenBool, false);
+        if (HasParam(animator, ID_OpenedBool)) animator.SetBool(ID_OpenedBool, false);
+        if (HasParam(animator, ID_ClosedBool)) animator.SetBool(ID_ClosedBool, true);
+    }
+    static bool HasParam(Animator a, int id) { foreach (var p in a.parameters) if (p.nameHash == id) return true; return false; }
 
     void SetDoorBlockers(bool closed)
     {
         if (doorBlockers == null) return;
-        for (int i = 0; i < doorBlockers.Length; i++)
+        foreach (var obs in doorBlockers)
         {
-            var obs = doorBlockers[i];
             if (!obs) continue;
-            obs.carving = closed;
-            obs.enabled = closed;
-            var col = obs.GetComponent<Collider>();
-            if (col) col.enabled = closed;
+            obs.enabled = closed; obs.carving = closed;
+            var col = obs.GetComponent<Collider>(); if (col) col.enabled = closed;
         }
     }
+    void SetDoorLinks(bool on) { if (openLinks == null) return; foreach (var link in openLinks) if (link) link.activated = on; }
 
-    void SetDoorLinks(bool on)
-    {
-        if (openLinks == null) return;
-        for (int i = 0; i < openLinks.Length; i++)
-        {
-            var link = openLinks[i];
-            if (!link) continue;
-            link.activated = on;
-        }
-    }
+    int LM() => (agentLayer.value != 0) ? agentLayer.value : Physics.AllLayers;
 
-    // ===== 감지 & 슬롯 배정 =====
     bool HasAgentAt(Vector3 pos)
     {
-        int mask = (agentLayer.value != 0) ? agentLayer.value : Physics.AllLayers;
-        var hits = Physics.OverlapSphere(pos, slotRadius, mask, QueryTriggerInteraction.Collide);
-        if (hits == null || hits.Length == 0) return false;
-
-        for (int i = 0; i < hits.Length; i++)
+        var hits = Physics.OverlapSphere(
+            pos, slotRadius, LM(),
+            ignoreTriggerColliders ? QueryTriggerInteraction.Ignore : QueryTriggerInteraction.Collide
+        );
+        if (hits == null) return false;
+        foreach (var h in hits)
         {
-            var h = hits[i];
             if (!h) continue;
             if (ignoreTriggerColliders && h.isTrigger) continue;
-
-            var a = h.GetComponentInParent<PassengerAgent>();
-            if (a == null) continue;
-
-            // 태그 필터를 쓰고 싶다면 여기서 a.CompareTag("Agent") 확인
-            return true;
+            if (h.GetComponentInParent<PassengerAgent>() != null) return true;
         }
         return false;
     }
 
-    // forward(파란축)가 '버스 안쪽'
-    bool IsOutsideSide(Vector3 agentPos)
+    // ★ 문 주변 광역 감지(슬롯 바깥 반경까지): PassengerAgent가 반경 내에 하나라도 있으면 true
+    public bool HasAgentsNear(Transform transform, float radius)
     {
-        Vector3 toAgent = agentPos - transform.position; toAgent.y = 0f;
-        return Vector3.Dot(toAgent, transform.forward) < 0f;
-    }
-    bool IsInsideSide(Vector3 agentPos)
-    {
-        Vector3 toAgent = agentPos - transform.position; toAgent.y = 0f;
-        return Vector3.Dot(toAgent, transform.forward) > 0f;
-    }
-
-    bool TryAdmitCommon(PassengerAgent a)
-    {
-        if (!isOpen || a == null) return false;
-        if (!admitEnabled) return false;
-        if (inGate.Count >= gateThroughput) return false;
-
-        foreach (var t in gateSlots)
+        var hits = Physics.OverlapSphere(
+            transform.position, radius, LM(),
+            ignoreTriggerColliders ? QueryTriggerInteraction.Ignore : QueryTriggerInteraction.Collide
+        );
+        if (hits == null) return false;
+        foreach (var h in hits)
         {
-            if (!HasAgentAt(t.position))
+            if (!h) continue;
+            if (ignoreTriggerColliders && h.isTrigger) continue;
+            var ag = h.GetComponentInParent<PassengerAgent>();
+            if (ag != null)
             {
-                a.GoToPoint(t.position);
-                inGate.Add(a);
+                // 이미 바깥에서 제거 대기 중이어도 반경 안이면 true
                 return true;
             }
         }
         return false;
     }
 
+    bool IsOutsideSide(Vector3 p) { Vector3 to = p - transform.position; to.y = 0f; return Vector3.Dot(to, transform.forward) < 0f; }
+    bool IsInsideSide(Vector3 p) { Vector3 to = p - transform.position; to.y = 0f; return Vector3.Dot(to, transform.forward) > 0f; }
+
+    Transform PickMostCentralFreeSlot()
+    {
+        if (gateSlots == null || gateSlots.Length == 0) return null;
+        Transform best = null; float bestScore = float.PositiveInfinity;
+        foreach (var s in gateSlots)
+        {
+            if (!s) continue;
+            if (HasAgentAt(s.position)) continue;
+            Vector3 local = transform.InverseTransformPoint(s.position);
+            float lateral = Mathf.Abs(local.x);  // 좌우 중앙성
+            float depth = Mathf.Abs(local.z);
+            float score = lateral * 10f + depth;
+            if (score < bestScore) { bestScore = score; best = s; }
+        }
+        return best;
+    }
+
+    bool TryAdmitCore(PassengerAgent a)
+    {
+        if (!isOpen || a == null || !admitEnabled) return false;
+        if (inGate.Count >= gateThroughput) return false;
+
+        var slot = PickMostCentralFreeSlot();
+        if (!slot) return false;
+
+        a.GoToPoint(slot.position);
+        inGate.Add(a);
+        return true;
+    }
+
     public bool TryAdmitBoard(PassengerAgent a)
     {
-        if (!IsOutsideSide(a.transform.position)) return false;
-        return TryAdmitCommon(a);
+        if (!isEntry) return false; // 승차 전용 문이 아니면 거부
+        if (a == null) return false;
+        float dist = Vector3.Distance(a.transform.position, transform.position);
+        if (dist > admitNearRadius && !IsOutsideSide(a.transform.position)) return false;
+        return TryAdmitCore(a);
     }
-
-    // DoorGate.cs 필드 추가
-    [Header("Admit 근접 허용")]
-    public float admitNearRadius = 0.7f; // 문 중심 ~ 에이전트 거리 이내면 '안쪽' 판정 생략
-
-    // DoorGate.cs TryAdmitAlight 수정
     public bool TryAdmitAlight(PassengerAgent a)
     {
+        if (!isExit) return false; // 하차 전용 문이 아니면 거부
         if (a == null) return false;
-
-        // ★ 문에 매우 가까우면 안/밖 판정 완화
         float dist = Vector3.Distance(a.transform.position, transform.position);
-        if (dist > admitNearRadius)
-        {
-            if (!IsInsideSide(a.transform.position)) return false;
-        }
-
-        return TryAdmitCommon(a);
+        if (dist > admitNearRadius && !IsInsideSide(a.transform.position)) return false;
+        return TryAdmitCore(a);
     }
 
-
-    public bool TryAdmit(PassengerAgent a) => TryAdmitCommon(a);
-
-    public void ReleaseAgent(PassengerAgent a)
-    {
-        if (a != null) inGate.Remove(a);
-    }
+    public void ReleaseAgent(PassengerAgent a) { if (a != null) inGate.Remove(a); }
 
     public void FlushGateOccupants()
     {
-        var removeList = new List<PassengerAgent>();
-        foreach (var a in inGate)
+        if (gateSlots == null) return;
+        var remove = new List<PassengerAgent>();
+        foreach (var ag in inGate)
         {
-            if (a == null) { removeList.Add(a); continue; }
+            if (!ag) { remove.Add(ag); continue; }
             float best = float.PositiveInfinity;
-            foreach (var s in gateSlots)
-            {
-                float d = Vector3.Distance(a.transform.position, s.position);
-                if (d < best) best = d;
-            }
-            if (best > passClearDistance) removeList.Add(a);
+            foreach (var s in gateSlots) if (s)
+                {
+                    float d = Vector3.Distance(ag.transform.position, s.position);
+                    best = Mathf.Min(best, d);
+                }
+            if (best > passClearDistance) remove.Add(ag);
         }
-        for (int i = 0; i < removeList.Count; i++) inGate.Remove(removeList[i]);
+        foreach (var r in remove) inGate.Remove(r);
     }
 
     public bool IsClear()
     {
-        bool someone = false;
-        foreach (var t in gateSlots)
-            if (HasAgentAt(t.position)) { someone = true; break; }
-
-        if (someone)
+        bool busy = false;
+        if (gateSlots != null)
         {
-            clearSince = -1f;
-            return false;
+            foreach (var s in gateSlots)
+            {
+                if (!s) continue;
+                var hits = Physics.OverlapSphere(
+                    s.position, slotRadius, LM(),
+                    ignoreTriggerColliders ? QueryTriggerInteraction.Ignore : QueryTriggerInteraction.Collide
+                );
+                if (hits == null) continue;
+                foreach (var h in hits)
+                {
+                    if (!h) continue;
+                    if (ignoreTriggerColliders && h.isTrigger) continue;
+                    if (h.GetComponentInParent<PassengerAgent>() != null) { busy = true; break; }
+                }
+                if (busy) break;
+            }
         }
+        if (busy) { clearSince = -1f; return false; }
         if (clearSince < 0f) clearSince = Time.time;
-        return (Time.time - clearSince) > 0.2f;
+        return (Time.time - clearSince) > 0.15f;
     }
 
     public bool IsClearStrict()
