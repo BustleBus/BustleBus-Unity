@@ -88,7 +88,7 @@ public class DoorGate : MonoBehaviour
     }
     public void Close()
     {
-        if (openHolders.Count > 0) return;
+        //if (openHolders.Count > 0) return;
         isOpen = false;
         PlayCloseAnim(); SetDoorBlockers(true); SetDoorLinks(false);
     }

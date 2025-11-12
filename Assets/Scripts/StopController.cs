@@ -24,7 +24,7 @@ public class StopController : MonoBehaviour
     public Animator busAnimator;
 
     [Header("탑승 수")]
-    public PassengerAgent agentPrefab;
+    public List<PassengerAgent> agentPrefabs = new(); // ★★★ 랜덤 프리팹 리스트
     public int boardMinPerStop = 1;
     public int boardMaxPerStop = 5;
 
@@ -38,7 +38,9 @@ public class StopController : MonoBehaviour
 
     int boardedThisStop = 0;
     int boardingGoalThisStop = 0;
-
+    [Header("디버그/제어")]
+    [Tooltip("즉시 정차를 발동시킬 키")]
+    public KeyCode immediateStopKey = KeyCode.J; // J 키로 설정 (예시)
     void Start()
     {
         if (entryPoint == null && queueRootOutside && queueRootOutside.childCount > 0)
@@ -71,16 +73,42 @@ public class StopController : MonoBehaviour
 
         StartCoroutine(MainLoop());
     }
+    void Update()
+    {
+        // 즉시 정차 키 입력 처리
+        if (Input.GetKeyDown(immediateStopKey))
+        {
+                StartCoroutine(ArriveStopOnce());
+        }
 
+        // ... (기존 Update() 로직)
+    }
     PassengerAgent SpawnAgentAt(Vector3 pos)
     {
-        PassengerAgent a;
-        if (agentPrefab)
+        PassengerAgent a = null;
+
+        bool success = false;
+
+        // 1. 랜덤 프리팹 선택 및 생성 시도
+        if (agentPrefabs != null && agentPrefabs.Count > 0)
         {
-            a = Instantiate(agentPrefab, SampleOnNavMesh(pos), Quaternion.identity);
+            PassengerAgent selectedPrefab = agentPrefabs[Random.Range(0, agentPrefabs.Count)];
+
+            if (selectedPrefab)
+            {
+                a = Instantiate(selectedPrefab, SampleOnNavMesh(pos), Quaternion.identity);
+                success = true;
+            }
         }
-        else
+
+        // 2. 프리팹 생성에 실패했거나 리스트가 비어 있으면 기본 GameObject 생성
+        if (!success)
         {
+            if (agentPrefabs == null || agentPrefabs.Count == 0 || a == null)
+            {
+                Debug.LogWarning("[StopController] Failed to spawn random prefab or none defined. Creating basic agent.");
+            }
+
             var go = new GameObject("Agent");
             var nav = go.AddComponent<NavMeshAgent>();
             nav.radius = 0.2f; nav.speed = 1.4f; nav.acceleration = 5f; nav.angularSpeed = 420f;
@@ -90,6 +118,7 @@ public class StopController : MonoBehaviour
             var col = vis.GetComponent<Collider>(); if (col) col.isTrigger = true;
             a = go.AddComponent<PassengerAgent>();
         }
+
         a.tag = "Agent";
 
         // 에이전트 제거 시 insideAgents 리스트에서 제거하도록 구독
@@ -183,7 +212,7 @@ public class StopController : MonoBehaviour
             {
                 if (a != null && a.willAlightHere)
                 {
-                    // ★★★ 수정: PrepareAlight 건너뛰고 바로 Alighting 상태로 최종 지점 목표 설정
+                    // Alighting 상태로 최종 지점 목표 설정
                     a.BeginAlight(doorOut, finalExitPoint);
                 }
             }
@@ -226,10 +255,10 @@ public class StopController : MonoBehaviour
         if (doorOut && doorOutOpen) CloseDoorImmediately(doorOut);
         if (doorIn && doorInOpen) CloseDoorImmediately(doorIn);
 
-        //  문 닫힘 애니메이션/장애물 적용 대기 (운행 시작 보장) 
+        // ★★★ 문 닫힘 애니메이션/장애물 적용 대기 시간 증가 ★★★
         if (doorOutOpen || doorInOpen)
         {
-            float closeTimeout = Time.time + 5.0f; // 최대 4초로 증가
+            float closeTimeout = Time.time + 6.0f; // 최대 6초로 증가
 
             if (doorOut && doorOutOpen)
             {
@@ -238,7 +267,6 @@ public class StopController : MonoBehaviour
 
             if (doorIn && doorInOpen)
             {
-                closeTimeout = Time.time + 5.0f; // 최대 4초로 증가
                 yield return new WaitUntil(() => doorIn.isOpen == false || Time.time > closeTimeout);
             }
 
@@ -253,9 +281,18 @@ public class StopController : MonoBehaviour
     {
         if (!door) return;
         door.FlushGateOccupants();
-        // 슬롯 및 게이트 통과 중인 승객이 완전히 없어야 Close 
-        if (door.IsClearStrict()) door.Close();
-        else door.ForceCloseNow();
+        // 문 닫힘 로직을 분리하고, 강제 닫힘(ForceCloseNow) 시에도 Hold를 해제
+        if (door.IsClearStrict())
+        {
+            door.Close(); // 일반 닫힘 (Hold 해제는 Close() 이후에)
+        }
+        else
+        {
+            // 문 슬롯이 비어있지 않다면 강제 닫힘. (NavMesh Obstacle 즉시 활성화)
+            Debug.LogWarning($"[StopController] Door {door.name} is not clear. Forcing immediate closure.");
+            door.ForceCloseNow();
+
+        }
         door.ReleaseHold(this);   // 재오픈 방지
         door.SetAdmitEnabled(false);
     }
@@ -284,7 +321,7 @@ public class StopController : MonoBehaviour
             if (a == null) continue;
 
             // 1. Admit 시도 (문 슬롯 통과 권한 획득)
-            float timeout = Time.time + 3.0f;
+            float timeout = Time.time + 3.0f; // 최대 3초 대기
             bool admitted = false;
 
             yield return new WaitUntil(() => a == null || (admitted = doorOut.TryAdmitAlight(a)) || Time.time > timeout);
@@ -297,7 +334,7 @@ public class StopController : MonoBehaviour
             }
             else
             {
-                // 2. 문 슬롯 중앙 도착 대기 (이미 Alighting 상태이지만, 문 슬롯 진입 경로 확인)
+                // 2. 문 슬롯 중앙 도착 대기
                 timeout = Time.time + 3.0f;
                 yield return new WaitUntil(() => a == null || a.Reached() || Time.time > timeout);
 
@@ -307,7 +344,6 @@ public class StopController : MonoBehaviour
                 var nearestSlot = NearestSlot(doorOut.gateSlots, a.transform.position);
                 if (nearestSlot)
                 {
-                    // 문 바깥쪽으로 명확한 목표 지점 설정 (NavMesh Agent가 문을 빠져나가도록 유도)
                     Vector3 throughPoint = exitPointOutside ? exitPointOutside.position : nearestSlot.position - doorOut.transform.forward * 1.5f;
                     a.GoToPoint(throughPoint);
 
@@ -323,8 +359,8 @@ public class StopController : MonoBehaviour
                 doorOut.ReleaseAgent(a); // 슬롯에서 해제하여 다음 승객에게 양보
             }
 
-            // 4. 최종 하차 지점으로 이동 명령 (BeginAlight에서 이미 호출되었지만, Admit 실패 시 경로 복구 용도)
-            if (a != null && a.state != AgentState3D.Alighting) // Alighting 상태가 아니라면 (Admit 실패로 인해) 재시작
+            // 4. 최종 하차 지점으로 이동 명령 (Admit 실패 시 경로 복구 용도)
+            if (a != null && a.state != AgentState3D.Alighting)
             {
                 Vector3 finalExitPoint = exitPointOutside ? exitPointOutside.position : doorOut.transform.position - doorOut.transform.forward * 1.5f;
                 a.BeginAlight(doorOut, finalExitPoint);
@@ -364,11 +400,11 @@ public class StopController : MonoBehaviour
             var nearestSlot = NearestSlot(doorIn.gateSlots, p.transform.position);
             if (nearestSlot)
             {
-                Vector3 passThrough = nearestSlot.position + doorIn.transform.forward * 0.7f;
+                Vector3 passThrough = nearestSlot.position + doorIn.transform.forward * 1.0f;
                 p.GoToPoint(passThrough);
 
-                // 문 슬롯 통과를 위한 최소 대기 시간 부여
-                yield return new WaitForSeconds(0.1f);
+                // ★★★ 수정: 문 슬롯 통과를 위한 최소 대기 시간 부여 (0.25초로 증가) ★★★
+                yield return new WaitForSeconds(0.25f);
 
                 doorIn.ReleaseAgent(p);
             }
@@ -378,7 +414,7 @@ public class StopController : MonoBehaviour
             if (slot == null) slot = FindNearestFreeStand(p.transform.position);
 
             if (slot != null) p.BeginRide(slot);
-            else p.GoToPoint(doorIn.transform.position + doorIn.transform.forward * 0.9f);
+            else p.GoToPoint(doorIn.transform.position + doorIn.transform.forward * 0.4f);
 
             // 5. 탑승 완료 처리 및 카운트 증가 (다음 승객 처리 루프 즉시 재개)
             insideAgents.Add(p);
@@ -390,7 +426,7 @@ public class StopController : MonoBehaviour
         // 최종 탑승 완료 후, 마지막 승객이 문 안쪽에서 좌석으로 이동할 시간을 확보 (닫힘 보장)
         if (boardedThisStop > 0 && doorIn)
         {
-            float finalClearTimeout = Time.time + 2f;
+            float finalClearTimeout = Time.time + 4.0f;
             yield return new WaitUntil(() => doorIn.IsClearStrict() || Time.time > finalClearTimeout);
 
             if (Time.time > finalClearTimeout)
@@ -398,6 +434,7 @@ public class StopController : MonoBehaviour
                 Debug.LogWarning("Front door clear timeout exceeded. Forcing closure check.");
             }
         }
+
         doorIn.SetAdmitEnabled(false);
     }
 
