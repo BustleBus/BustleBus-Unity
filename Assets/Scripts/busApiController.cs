@@ -4,13 +4,13 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.Networking;
 
-
 [Serializable]
 public class BusSearchLocationRoot
 {
     public bool success;
     public RouteLocationResult[] result;
 }
+
 [Serializable]
 public class GoogleSheetLogRequest
 {
@@ -20,6 +20,7 @@ public class GoogleSheetLogRequest
     public int crowd;           // 혼잡도(탑승 인원)
     public string time;         // ISO 타임스탬프
 }
+
 [Serializable]
 public class RouteLocationResult
 {
@@ -41,25 +42,26 @@ public class BusOnRoute
     public string vehicleNo;
     public string congestionLevel;
 }
+
 public class busApiController : MonoBehaviour
 {
-    [Header("조용 시간대(폴링 중지) 설정")]
+    [Header("조용 시간대(폴링 중지) 설정 (현재는 사용 안 함, MultiBus에서 사용 권장)")]
     [Tooltip("예: 0 이면 00시, 6 이면 06시 (끝 시간은 포함 X)")]
     [Range(0, 23)]
     public int quietStartHour = 0;
 
     [Range(0, 23)]
     public int quietEndHour = 6; // end는 '미만'으로 처리
+
     [Header("Google Sheet (Apps Script)")]
     [Tooltip("JS fetch에서 쓰던 Apps Script URL을 그대로 넣어주세요.")]
     public string googleSheetUrl =
-    "https://script.google.com/macros/s/AKfycbzprzkNls7CYg9_gJnnHt5sEKMJYCWd66mPt-KDZoVWfxeh2c4lBB1e1-o8_TjHSWqm/exec";
+        "https://script.google.com/macros/s/AKfycbzprzkNls7CYg9_gJnnHt5sEKMJYCWd66mPt-KDZoVWfxeh2c4lBB1e1-o8_TjHSWqm/exec";
 
-    private bool _pollingStarted = false;   // 이미 시작했는지 체크
-    [Header("버스 위치 API 기본 설정")]
+    [Header("버스 위치 API 기본 설정(로그용)")]
     [Tooltip("예: https://bustlebus-api-198875705973.asia-northeast3.run.app/api/v1/searchLocation")]
     public string searchLocationBaseUrl =
-           "https://bustlebus-api-198875705973.asia-northeast3.run.app/api/v1/searchLocation";
+        "https://bustlebus-api-198875705973.asia-northeast3.run.app/api/v1/searchLocation";
 
     [Tooltip("TAGO cityCode (예: 38030)")]
     public string cityCode = "38030";
@@ -67,17 +69,12 @@ public class busApiController : MonoBehaviour
     [Tooltip("버스 번호 (문자열로) 예: 160")]
     public string busNo = "160";
 
-    [Header("어느 버스를 따라갈지")]
-    [Tooltip("특정 차량 번호를 따라가고 싶으면 입력 (예: 경남71자5809). 비워두면 첫 번째 버스를 사용.")]
+    [Header("어느 버스를 따라갈지 (MultiBus에서 세팅)")]
+    [Tooltip("특정 차량 번호를 따라가고 싶으면 입력 (예: 경남71자5809).")]
     public string targetVehicleNo = "";
-
-    [Header("폴링 주기 (초)")]
-    public float pollIntervalSeconds = 10f;
 
     [Header("정차/승하차 제어용 StopController")]
     public StopController stopController;
-
-    
 
     [Header("UI 표시")]
     [Tooltip("현재 정류장 이름을 표시할 텍스트 (예: \"정촌면사무소\")")]
@@ -110,181 +107,105 @@ public class busApiController : MonoBehaviour
             return;
         }
 
-        // ★ 아직 MultiBus에서 targetVehicleNo를 안 넣어줬으면
-        //    여기서는 아무 것도 안 하고 대기한다.
-        if (string.IsNullOrEmpty(targetVehicleNo))
+        // ★ 예전에는 여기서 targetVehicleNo 확인 후 BeginPolling() 했지만,
+        //    이제는 MultiBusSimulationManager가 위치를 넘겨주는 구조이므로
+        //    별도로 코루틴을 돌리지 않습니다.
+    }
+    public void ClearUI()
+    {
+        if (currentStopText != null)
+            currentStopText.text = "";
+
+        if (routeInfoText != null)
+            routeInfoText.text = "";
+
+        if (vehicleText != null)
+            vehicleText.text = "";
+    }
+
+    void OnDisable()
+    {
+        // 폴링 중지 & 상태 리셋
+        StopAllCoroutines();
+
+        _lastRoute = null;
+        _lastBus = null;
+        _lastNodeId = null;
+        _isProcessingStop = false;
+
+        // UI도 같이 지워주기
+        ClearUI();
+    }
+    /// <summary>
+    /// MultiBusSimulationManager에서 route/bus 정보를 전달해 줄 때 호출.
+    /// 이 컴포넌트는 더 이상 직접 API를 호출하지 않고, 전달된 위치정보만 사용합니다.
+    /// </summary>
+    public void ApplyLocationFromManager(RouteLocationResult route, BusOnRoute bus)
+    {
+        if (!isActiveAndEnabled) return;
+        if (route == null || bus == null) return;
+
+        // 타겟 차량 번호가 지정되어 있고, 해당 vehicleNo가 아니면 무시
+        if (!string.IsNullOrEmpty(targetVehicleNo) &&
+            !string.Equals(targetVehicleNo, bus.vehicleNo, StringComparison.Ordinal))
         {
-            // MultiBusSimulationManager.AssignBusToSlot()에서
-            // BeginPolling()을 호출해 줄 것.
             return;
         }
 
-        BeginPolling();
-    }
+        _lastRoute = route;
+        _lastBus = bus;
 
-    //  외부(MultiBus)에서 호출해서 폴링을 시작하는 함수
-    public void BeginPolling()
-    {
-        if (_pollingStarted)
-            return; // 이미 시작했으면 또 시작 안 함
+        UpdateUIWithCurrentStop(route, bus);
 
-        _pollingStarted = true;
-        StartCoroutine(PollLoop());
-    }
+        // 2) 정류장(nodeId) 변경 여부 체크
+        bool stationChanged = false;
 
-    bool IsQuietHour(int hour)
-    {
-        // ex) 0~6 같은 일반 케이스
-        if (quietStartHour < quietEndHour)
-            return hour >= quietStartHour && hour < quietEndHour;
-
-        // ex) 22~5 같이 자정을 넘는 케이스
-        if (quietStartHour > quietEndHour)
-            return hour >= quietStartHour || hour < quietEndHour;
-
-        // start == end 인 경우: 조용 시간대 없음으로 처리
-        return false;
-    }
-
-    IEnumerator PollLoop()
-    {
-        var wait = new WaitForSeconds(pollIntervalSeconds);
-
-        while (true)
+        if (_lastNodeId == null || _lastNodeId != bus.nodeId)
         {
-            int hour = DateTime.Now.Hour;
-            if (IsQuietHour(hour))
-            {
-              
-            }
-            else
-            {
-                yield return RequestAndProcessLocation();
-            }
-
-            yield return wait;
+            stationChanged = true;
         }
-    }
 
-    IEnumerator RequestAndProcessLocation()
-    {
-        // 쿼리 붙이기
-        string url = $"{searchLocationBaseUrl}?cityCode={cityCode}&busNo={busNo}";
-        Debug.Log("[BusLocationPoller] GET " + url);
-
-        using (UnityWebRequest www = UnityWebRequest.Get(url))
+        if (!stationChanged)
         {
-            www.timeout = 10;
-            yield return www.SendWebRequest();
-
-            if (www.result != UnityWebRequest.Result.Success)
-            {
-                Debug.LogWarning("[BusLocationPoller] 위치 조회 실패: " + www.error);
-                yield break;
-            }
-
-            string json = www.downloadHandler.text;
-            //Debug.Log("[BusLocationPoller] 응답: " + json);
-
-            BusSearchLocationRoot root = null;
-            try
-            {
-                root = JsonUtility.FromJson<BusSearchLocationRoot>(json);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError("[BusLocationPoller] JSON 파싱 에러: " + e);
-                yield break;
-            }
-
-            if (root == null || !root.success || root.result == null || root.result.Length == 0)
-            {
-                Debug.LogWarning("[BusLocationPoller] 유효한 위치 정보가 없습니다.");
-                yield break;
-            }
-
-            // 1) 어떤 route (상행/하행) + 어떤 bus를 따라갈지 결정
-            RouteLocationResult chosenRoute = null;
-            BusOnRoute chosenBus = null;
-
-            foreach (var route in root.result)
-            {
-                if (route.buses == null || route.buses.Length == 0)
-                    continue;
-
-                foreach (var bus in route.buses)
-                {
-                    if (!string.IsNullOrEmpty(targetVehicleNo))
-                    {
-                        if (bus.vehicleNo == targetVehicleNo)
-                        {
-                            chosenRoute = route;
-                            chosenBus = bus;
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        // 타겟 차량 미설정이면 제일 먼저 찾은 버스 사용
-                        chosenRoute = route;
-                        chosenBus = bus;
-                        break;
-                    }
-                }
-
-                if (chosenBus != null) break;
-            }
-
-            if (chosenBus == null)
-            {
-                Debug.LogWarning("[BusLocationPoller] 조건에 맞는 버스를 찾지 못했습니다.");
-                yield break;
-            }
-            _lastRoute = chosenRoute;
-            _lastBus = chosenBus;
-
-            UpdateUIWithCurrentStop(chosenRoute, chosenBus);
-            // 디버그
-            Debug.Log($"[BusLocationPoller] 선택된 버스: routeId={chosenRoute.routeId}, " +
-                      $"vehicleNo={chosenBus.vehicleNo}, nodeOrd={chosenBus.nodeOrd}, nodeId={chosenBus.nodeId}, nodeName={chosenBus.nodeName}");
-
-            // 2) 정류장(nodeId) 변경 여부 체크
-            bool stationChanged = false;
-
-            if (_lastNodeId == null || _lastNodeId != chosenBus.nodeId)
-            {
-                stationChanged = true;
-            }
-
-            if (!stationChanged)
-            {
-                // 같은 정류장에 머무르는 중이라면 아무것도 하지 않음
-                yield break;
-            }
-
-            // 새 정류장으로 업데이트
-            _lastNodeId = chosenBus.nodeId;
-
-            // 이미 정차 시퀀스를 처리 중이면 중복 실행 방지
-            if (_isProcessingStop)
-                yield break;
-
-            StartCoroutine(HandleNewStop(chosenRoute, chosenBus));
+            // 같은 정류장에 머무르는 중이라면 아무것도 하지 않음
+            return;
         }
+
+        // 새 정류장으로 업데이트
+        _lastNodeId = bus.nodeId;
+
+        // 이미 정차 시퀀스를 처리 중이면 중복 실행 방지
+        if (_isProcessingStop)
+            return;
+
+        StartCoroutine(HandleNewStop(route, bus));
     }
+
+    /// <summary>
+    /// 슬롯에 새로운 vehicle을 배정할 때(또는 재사용할 때) 상태 초기화용.
+    /// MultiBusSimulationManager.AssignBusToSlot()에서 호출하면 됨.
+    /// </summary>
+    public void ResetBusState()
+    {
+        _lastRoute = null;
+        _lastBus = null;
+        _lastNodeId = null;
+        _isProcessingStop = false;
+    }
+
+    // ==== 아래부터는 기존 로직 재사용 (UI + 정차/시트 + 시트 로그) ====
+
     private void UpdateUIWithCurrentStop(RouteLocationResult route, BusOnRoute bus)
     {
         // 현재 정류장 이름
         if (currentStopText != null)
         {
             currentStopText.text = $"현재 정류장 : {bus.nodeName}";
-            // 예: 색을 잠깐 바꾸거나 DOFade로 연출 주고싶으면 여기서 처리
         }
 
         // 노선 / 방향 정보
         if (routeInfoText != null)
         {
-            // startNodeName → endNodeName 방향 텍스트
             routeInfoText.text = $"{route.routeNo}번 버스 ({route.startNodeName} → {route.endNodeName})";
         }
 
@@ -302,14 +223,12 @@ public class busApiController : MonoBehaviour
         // 1) StopController에게 "정류장 도착 → 승하차 시퀀스" 실행 요청
         if (stopController != null)
         {
-            // StopController에 public Coroutine RunStopCycleOnce(MonoBehaviour caller) 추가해두셨다는 가정
             yield return stopController.RunStopCycleOnce(this);
 
             // 2) 정차가 끝난 순간의 버스 내부 인원 수
             int passengerCount = stopController.insideAgents.Count;
             Debug.Log($"[BusLocationPoller] 정류장 {bus.nodeName} 승하차 후 탑승 인원: {passengerCount}");
 
-         
             // 3) Google Sheet(Apps Script)로 로그 전송
             if (!string.IsNullOrEmpty(googleSheetUrl))
             {
@@ -320,6 +239,7 @@ public class busApiController : MonoBehaviour
 
         _isProcessingStop = false;
     }
+
     int GetCrowdCountForSheet()
     {
         int crowd = -1;
@@ -334,20 +254,19 @@ public class busApiController : MonoBehaviour
         // 2) YOLO 결과가 없거나 -1이면, 시뮬레이션 내부 탑승 인원으로 대체
         if (crowd < 0 && stopController != null)
         {
-            crowd = stopController.insideAgents.Count;  // 버스 내부 탑승 인원 리스트 :contentReference[oaicite:5]{index=5}
+            crowd = stopController.insideAgents.Count;
         }
 
         return Mathf.Max(0, crowd);
     }
 
-
     IEnumerator SendGoogleSheetLog(BusOnRoute bus, int crowd)
     {
         GoogleSheetLogRequest payload = new GoogleSheetLogRequest
         {
-            stopName = bus.nodeName,      // 정류장
-            busNumber = busNo,            // 기존 busNo (노선)
-            vehicleNo = bus.vehicleNo,    // 실제 차량 번호
+            stopName = bus.nodeName,   // 정류장
+            busNumber = busNo,         // 노선 번호
+            vehicleNo = bus.vehicleNo, // 실제 차량 번호
             crowd = crowd,
             time = DateTime.UtcNow.ToString("o")
         };
@@ -375,7 +294,6 @@ public class busApiController : MonoBehaviour
             }
         }
     }
-
 
     [Serializable]
     public class PassengerLogRequest

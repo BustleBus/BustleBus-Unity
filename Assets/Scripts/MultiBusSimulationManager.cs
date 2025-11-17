@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -11,6 +12,12 @@ public class MultiBusSimulationManager : MonoBehaviour
     public string cityCode = "38030";
     public string busNo = "160";
     public float pollIntervalSeconds = 10f;
+
+    [Header("조용 시간대(전체 폴링 중지)")]
+    [Range(0, 23)]
+    public int quietStartHour = 0;   // 00시
+    [Range(0, 23)]
+    public int quietEndHour = 6;     // 06시 (미만)
 
     [Header("슬롯들 (위에서 아래, 왼쪽에서 오른쪽 순서로 넣기)")]
     public BusViewSlot[] slots;
@@ -31,13 +38,32 @@ public class MultiBusSimulationManager : MonoBehaviour
         StartCoroutine(PollLoop());
     }
 
+    bool IsQuietHour(int hour)
+    {
+        // ex) 0~6 같은 일반 케이스
+        if (quietStartHour < quietEndHour)
+            return hour >= quietStartHour && hour < quietEndHour;
+
+        // ex) 22~5 같이 자정을 넘는 케이스
+        if (quietStartHour > quietEndHour)
+            return hour >= quietStartHour || hour < quietEndHour;
+
+        // start == end 인 경우: 조용 시간대 없음으로 처리
+        return false;
+    }
+
     IEnumerator PollLoop()
     {
         var wait = new WaitForSeconds(pollIntervalSeconds);
 
         while (true)
         {
-            yield return RequestAndUpdateBuses();
+            int hour = DateTime.Now.Hour;
+            if (!IsQuietHour(hour))
+            {
+                yield return RequestAndUpdateBuses();
+            }
+
             yield return wait;
         }
     }
@@ -95,7 +121,7 @@ public class MultiBusSimulationManager : MonoBehaviour
 
                     aliveVehicles.Add(bus.vehicleNo);
 
-                    // 이미 슬롯이 있으면 텍스트만 갱신
+                    // 이미 슬롯이 있으면 갱신
                     if (vehicleToSlot.TryGetValue(bus.vehicleNo, out var slot))
                     {
                         UpdateSlot(slot, route, bus);
@@ -163,12 +189,18 @@ public class MultiBusSimulationManager : MonoBehaviour
             slot.apiController.busNo = busNo;
             slot.apiController.targetVehicleNo = bus.vehicleNo;
 
-            // 여기서 직접 폴링 시작 (Start에서 자동 시작 X)
-            slot.apiController.BeginPolling();
+            // 새 vehicle 배정 시 상태 초기화
+            slot.apiController.ResetBusState();
         }
 
         // 화면/YOLO/API 켜기
         slot.ShowView();
+
+        // ★ 여기서도 한 번 위치 업데이트 전달 (초기 정류장 표시 + 정차 시퀀스 반영)
+        if (slot.apiController != null)
+        {
+            slot.apiController.ApplyLocationFromManager(route, bus);
+        }
 
         if (!vehicleToSlot.ContainsKey(bus.vehicleNo))
             vehicleToSlot.Add(bus.vehicleNo, slot);
@@ -177,6 +209,7 @@ public class MultiBusSimulationManager : MonoBehaviour
 
         Debug.Log($"[MultiBus] 버스 배정: vehicle={bus.vehicleNo} -> slot={slot.name}");
     }
+
     public void ChangeBusNo(string newBusNo)
     {
         if (string.IsNullOrEmpty(newBusNo))
@@ -191,26 +224,66 @@ public class MultiBusSimulationManager : MonoBehaviour
             return;
         }
 
-        Debug.Log($"[MultiBus] 추적 노선 변경: {busNo} -> {newBusNo}");
+        Debug.Log($"[MultiBus] 노선 변경: {busNo} → {newBusNo}");
         busNo = newBusNo;
 
-        // 이전 노선의 vehicle → 슬롯 매핑/화면 초기화
-        foreach (var kv in vehicleToSlot)
+        // ========================================
+        // 1. 모든 슬롯 완전 초기화
+        // ========================================
+        foreach (var slot in slots)
         {
-            var slot = kv.Value;
-            if (slot != null)
+            if (slot == null) continue;
+
+            slot.isUsed = false;
+            slot.vehicleNo = "";
+            slot.HideView(clearTexts: true);
+
+            // apiController 초기화
+            if (slot.apiController != null)
             {
-                slot.HideView(clearTexts: true);
+                slot.apiController.targetVehicleNo = "";
+                slot.apiController.ResetBusState();
+                slot.apiController.enabled = false;     // 완전히 꺼두기
+            }
+
+
+
+            // StopController 내부 승객도 초기화
+            if (slot.apiController != null && slot.apiController.stopController != null)
+            {
+                var sc = slot.apiController.stopController;
+                sc.insideAgents.Clear();
             }
         }
+
+        // ========================================
+        // 2. vehicleToSlot 사전 초기화
+        // ========================================
         vehicleToSlot.Clear();
 
-        // 바로 한 번 갱신 돌리고 싶으면
-        StartCoroutine(RequestAndUpdateBuses());
+        // ========================================
+        // 3. UI 즉시 갱신
+        // ========================================
+        // 필요하면 “로드 중…” 같은 UI 넣어도 가능
+
+        // ========================================
+        // 4. 새로운 노선 버스 목록 즉시 갱신
+        // ========================================
+        StopAllCoroutines();
+        StartCoroutine(PollLoop());                // PollLoop 다시 시작
+        StartCoroutine(RequestAndUpdateBuses());   // 첫 API 바로 실행
     }
+
+
     void UpdateSlot(BusViewSlot slot, RouteLocationResult route, BusOnRoute bus)
     {
-        // 현재 정류장 텍스트만 갱신
+        // 현재 정류장 텍스트 갱신
         slot.SetStopName(bus.nodeName);
+
+        // ★ 여기서도 버스 내부 로직에 위치 업데이트 전달
+        if (slot.apiController != null)
+        {
+            slot.apiController.ApplyLocationFromManager(route, bus);
+        }
     }
 }
