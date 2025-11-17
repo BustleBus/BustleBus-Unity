@@ -10,9 +10,11 @@ using Unity.Sentis;
 public class YoloInference : MonoBehaviour
 {
     public enum InputLayout { NHWC, NCHW }
-
+    [Header("UI Overlay (옵션)")]
+    public RectTransform targetUIRect;
     [Header("Camera / Model")]
     public Camera sourceCam;
+    public Camera displayCam;
     public ModelAsset modelAsset;             // .onnx 임포트한 Sentis ModelAsset
     public BackendType backend = BackendType.GPUCompute;
 
@@ -25,7 +27,11 @@ public class YoloInference : MonoBehaviour
     [Range(0, 1f)] public float confThreshold = 0.05f;
     [Range(0, 1f)] public float nmsIoU = 0.45f;
     public bool applySigmoid = true;
-
+    [Header("Runtime 옵션")]
+    [Tooltip("초당 몇 번 추론할지 (예: 2면 0.5초마다 한 번)")]
+    public float inferenceFPS = 2f;    // 기본 2fps 정도로 줄임
+    [Tooltip("임시로 추론을 멈출 때 사용")]
+    public bool pause = false;
     // 내부
     Worker worker;
     Model runtimeModel;
@@ -50,14 +56,33 @@ public class YoloInference : MonoBehaviour
         if (rt) rt.Release();
         if (white) Destroy(white);
     }
-
-    void OnEnable() => StartCoroutine(InferLoop());
-    void OnDisable() => StopAllCoroutines();
+    public int CurrentDetectionCount
+    {
+        get { return finalDets != null ? finalDets.Count : 0; }
+    }
+    void OnEnable()
+    {
+        StopAllCoroutines();
+        StartCoroutine(InferLoop());
+    }
+    void OnDisable()
+    {
+        StopAllCoroutines();
+    }
 
     IEnumerator InferLoop()
     {
-        var wait = new WaitForSeconds(1f / 6f);
-        while (true) { RunOnce(); yield return wait; }
+        while (true)
+        {
+            if (!pause && isActiveAndEnabled)
+            {
+                RunOnce();
+            }
+
+            float fps = Mathf.Max(0.5f, inferenceFPS);   // 최소 0.5fps 보장
+            float wait = 1f / fps;
+            yield return new WaitForSeconds(wait);
+        }
     }
 
     // 유틸: 원시 4값 -> Rect 변환 (cxcywh 또는 x1y1x2y2, 정규화/픽셀 자동 판별)
@@ -126,7 +151,7 @@ public class YoloInference : MonoBehaviour
         int n1 = (r > 1) ? s[1] : 1;
         int n2 = (r > 2) ? s[2] : 1;
         int n3 = (r > 3) ? s[3] : 1;
-        Debug.Log($"[Sentis] output0 shape (rank={r}): ({n0},{n1},{n2}{(r > 3 ? ("," + n3) : "")})");
+        //Debug.Log($"[Sentis] output0 shape (rank={r}): ({n0},{n1},{n2}{(r > 3 ? ("," + n3) : "")})");
 
         // 5) 파싱
         List<Det> dets;
@@ -366,15 +391,84 @@ public class YoloInference : MonoBehaviour
 
     void OnGUI()
     {
-        if (finalDets == null) return;
-        GUI.Label(new Rect(10, 10, 500, 24), $"Detections: {finalDets.Count}", label);
-        float sx = (float)Screen.width / inputW, sy = (float)Screen.height / inputH;
+        // 디버그: 감지 개수는 항상 왼쪽 위에 찍기
+        int cnt = (finalDets != null) ? finalDets.Count : -1;
+
+        if (finalDets == null || finalDets.Count == 0)
+            return;
+
+        // ★ 1) 버스 화면 RawImage의 RectTransform 이 꼭 세팅되어 있어야 함
+        if (targetUIRect == null)
+        {
+            // 아직 안 물려 있으면 전체 화면 기준(임시)
+            float sxFull = (float)Screen.width / inputW;
+            float syFull = (float)Screen.height / inputH;
+
+            foreach (var d2 in finalDets)
+            {
+                var r2 = d2.box;
+                Rect box2 = new Rect(
+                    r2.x * sxFull,
+                    r2.y * syFull,
+                    r2.width * sxFull,
+                    r2.height * syFull
+                );
+                DrawRect(box2, 2);
+            }
+            return;
+        }
+
+        // ★ 2) RawImage가 화면에서 차지하는 실제 픽셀 영역 가져오기
+        Vector3[] corners = new Vector3[4];
+        targetUIRect.GetWorldCorners(corners);
+        // corners[0] = 왼아래, [1] = 왼위, [2] = 오른위, [3] = 오른아래
+
+        float xMin = corners[0].x;
+        float yMin = corners[0].y;
+        float xMax = corners[2].x;
+        float yMax = corners[2].y;
+
+        float width = xMax - xMin;
+        float height = yMax - yMin;
+
+        // IMGUI 좌표 변환 (0,0 = 화면 왼위)
+        float baseX = xMin;
+        float baseY = Screen.height - (yMin + height);
+
+
+
+        // ★ 3) YOLO 입력(640x640) -> 이 RawImage 크기(width x height)로 스케일
+        float sx = width / (float)inputW;
+        float sy = height / (float)inputH;
+
+        // 버스 화면 안쪽 좌상단에 감지 개수 표시
+        GUI.Label(
+            new Rect(baseX + 4, baseY + 4, 200, 24),
+            $"Detections: {finalDets.Count}",
+            label
+        );
+
+        // ★ 4) 박스들 그리기
         foreach (var d in finalDets)
         {
-            var r = d.box;
-            DrawRect(new Rect(r.x * sx, r.y * sy, r.width * sx, r.height * sy), 2);
+            Rect r = d.box; // YOLO 입력 좌표 (0~640)
+
+            Rect box = new Rect(
+                baseX + r.x * sx,
+                baseY + r.y * sy,
+                r.width * sx,
+                r.height * sy
+            );
+
+            DrawRect(box, 2);
         }
     }
+
+
+
+
+
+
 
     void DrawRect(Rect r, int th)
     {

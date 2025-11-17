@@ -2,9 +2,14 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
-
+using UnityEngine.Networking;
 public class StopController : MonoBehaviour
 {
+
+
+    [Header("운행 모드")]
+    [Tooltip("true면 내부 랜덤 루프로 운행, false면 외부(버스 API)에서 정차를 트리거")]
+    public bool useRandomAutoLoop = false;
     [Header("용량/문/포인트")]
     public int capacity = 40;
     public DoorGate doorIn;                 // 앞문(승차 전용)
@@ -71,7 +76,11 @@ public class StopController : MonoBehaviour
             }
         }
 
-        StartCoroutine(MainLoop());
+        // ★ 외부 트리거 모드에서는 MainLoop를 돌리지 않음
+        if (useRandomAutoLoop)
+        {
+            StartCoroutine(MainLoop());
+        }
     }
     void Update()
     {
@@ -148,8 +157,12 @@ public class StopController : MonoBehaviour
     }
 
     void SetDriving(bool d) { if (busAnimator) busAnimator.SetBool("isDriving", d); }
-
-    IEnumerator ArriveStopOnce()
+    public Coroutine RunStopCycleOnce(MonoBehaviour caller)
+    {
+        // caller.StartCoroutine으로 호출해야 해서 주체를 받도록 설계
+        return caller.StartCoroutine(ArriveStopOnce());
+    }
+    public IEnumerator ArriveStopOnce()
     {
         // 1. 하차자 선정
         SelectAlighters();
